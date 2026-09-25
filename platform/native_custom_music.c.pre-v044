@@ -1,0 +1,582 @@
+#include <platform/native_custom_music.h>
+#include <platform/native_assets.h>
+
+#ifdef internal
+#undef internal
+#endif
+#include <vorbis/vorbisfile.h>
+#define internal static
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define CUSTOM_MUSIC_OUTPUT_RATE 44100
+#define CUSTOM_MUSIC_FP_SHIFT 16
+#define CUSTOM_MUSIC_FP_ONE (1u << CUSTOM_MUSIC_FP_SHIFT)
+
+/* Final Lap: 28/25 = 1.12x */
+#define FINAL_LAP_SPEED_NUM 28
+#define FINAL_LAP_SPEED_DEN 25
+
+/* Lightweight pitch-preserving OLA settings. */
+#define TS_WINDOW 1024
+#define TS_HOP 256
+
+struct NativeCustomMusicState
+{
+	s16 *pcm;
+	int frameCount;
+
+	s16 *finalPcm;
+	int finalFrameCount;
+	int finalLapActive;
+
+	int channels;
+	int sampleRate;
+	u64 positionFp;
+	u32 stepFp;
+	int active;
+	int paused;
+	int volume;
+	int levelID;
+};
+
+global_variable struct NativeCustomMusicState s_customMusic = {0};
+
+internal void NativeCustomMusic_StopNoLock(void)
+{
+	if (s_customMusic.pcm != NULL)
+	{
+		free(s_customMusic.pcm);
+	}
+	if (s_customMusic.finalPcm != NULL)
+	{
+		free(s_customMusic.finalPcm);
+	}
+
+	memset(&s_customMusic, 0, sizeof(s_customMusic));
+	s_customMusic.levelID = -1;
+	s_customMusic.volume = 190;
+}
+
+internal int NativeCustomMusic_LoadOgg(const char *path, s16 **pcmOut, int *frameCountOut, int *channelsOut, int *sampleRateOut)
+{
+	OggVorbis_File vf;
+	vorbis_info *info;
+	ogg_int64_t totalFrames64;
+	size_t totalBytes;
+	size_t bytesRead = 0;
+	s16 *pcm = NULL;
+	int bitstream = 0;
+	int result = 0;
+
+	*pcmOut = NULL;
+	*frameCountOut = 0;
+	*channelsOut = 0;
+	*sampleRateOut = 0;
+
+	if (ov_fopen(path, &vf) < 0)
+	{
+		return 0;
+	}
+
+	info = ov_info(&vf, -1);
+	if ((info == NULL) || (info->rate <= 0) || ((info->channels != 1) && (info->channels != 2)))
+	{
+		fprintf(stderr, "[CustomMusic] OGG invalido: se requiere mono o stereo.\n");
+		goto done;
+	}
+
+	totalFrames64 = ov_pcm_total(&vf, -1);
+	if ((totalFrames64 <= 0) || ((uint64_t)totalFrames64 > (uint64_t)INT_MAX))
+	{
+		fprintf(stderr, "[CustomMusic] OGG demasiado grande o sin frames validos.\n");
+		goto done;
+	}
+
+	if ((uint64_t)totalFrames64 > (uint64_t)SIZE_MAX / ((size_t)info->channels * sizeof(s16)))
+	{
+		fprintf(stderr, "[CustomMusic] OGG demasiado grande para memoria.\n");
+		goto done;
+	}
+
+	totalBytes = (size_t)totalFrames64 * (size_t)info->channels * sizeof(s16);
+	pcm = (s16 *)malloc(totalBytes);
+	if (pcm == NULL)
+	{
+		fprintf(stderr, "[CustomMusic] Sin memoria para decodificar OGG.\n");
+		goto done;
+	}
+
+	while (bytesRead < totalBytes)
+	{
+		size_t remaining = totalBytes - bytesRead;
+		int request = (remaining > 65536u) ? 65536 : (int)remaining;
+		long got = ov_read(&vf, (char *)pcm + bytesRead, request, 0, 2, 1, &bitstream);
+
+		if (got == 0)
+		{
+			break;
+		}
+		if (got < 0)
+		{
+			fprintf(stderr, "[CustomMusic] Error decodificando OGG (%ld).\n", got);
+			free(pcm);
+			pcm = NULL;
+			goto done;
+		}
+
+		bytesRead += (size_t)got;
+	}
+
+	if (bytesRead < (size_t)info->channels * sizeof(s16))
+	{
+		free(pcm);
+		pcm = NULL;
+		goto done;
+	}
+
+	*pcmOut = pcm;
+	*frameCountOut = (int)(bytesRead / ((size_t)info->channels * sizeof(s16)));
+	*channelsOut = info->channels;
+	*sampleRateOut = (int)info->rate;
+
+	pcm = NULL;
+	result = 1;
+
+done:
+	if (pcm != NULL)
+	{
+		free(pcm);
+	}
+
+	ov_clear(&vf);
+	return result;
+}
+
+internal int NativeCustomMusic_FileExists(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	if (f == NULL)
+	{
+		return 0;
+	}
+
+	fclose(f);
+	return 1;
+}
+
+/*
+ * Simple overlap-add time compression.
+ *
+ * We advance faster through the source than through the output, while each
+ * grain itself is reproduced at its original sample rate. That changes tempo
+ * without intentionally changing pitch.
+ *
+ * This is deliberately dependency-free and precomputed when the OGG loads,
+ * so the real-time audio callback remains cheap.
+ */
+
+int NativeCustomMusic_TryStartLevel(int levelID)
+{
+	char relativePath[128];
+	char finalRelativePath[128];
+	char path[1024];
+	char finalPath[1024];
+
+	s16 *newPcm = NULL;
+	s16 *newFinalPcm = NULL;
+
+	int newFrameCount = 0;
+	int newFinalFrameCount = 0;
+	int newChannels = 0;
+	int newSampleRate = 0;
+
+	int finalChannels = 0;
+	int finalSampleRate = 0;
+
+	static int bannerPrinted = 0;
+
+	if (!bannerPrinted)
+	{
+		printf("[CustomMusic] CTR Music Core v0.4.3 - SLIDER RESET\n");
+		fflush(stdout);
+		bannerPrinted = 1;
+	}
+
+	snprintf(relativePath, sizeof(relativePath),
+		"MUSIC_CUSTOM/level_%02d.ogg", levelID);
+
+	snprintf(finalRelativePath, sizeof(finalRelativePath),
+		"MUSIC_CUSTOM/level_%02d_final.ogg", levelID);
+
+	if (!NativeAssets_BuildPath(relativePath, path, sizeof(path)))
+	{
+		fprintf(stderr,
+			"[CustomMusic] Level %d: no pude construir la ruta.\n",
+			levelID);
+		NativeCustomMusic_Stop();
+		return 0;
+	}
+
+	if (!NativeCustomMusic_FileExists(path))
+	{
+		printf("[CustomMusic] Level %d: sin %s\n",
+			levelID, relativePath);
+		fflush(stdout);
+		NativeCustomMusic_Stop();
+		return 0;
+	}
+
+	printf("[CustomMusic] Level %d: cargando %s\n",
+		levelID, relativePath);
+	fflush(stdout);
+
+	if (!NativeCustomMusic_LoadOgg(
+		path,
+		&newPcm,
+		&newFrameCount,
+		&newChannels,
+		&newSampleRate))
+	{
+		fprintf(stderr,
+			"[CustomMusic] Level %d: no pude cargar %s; uso CSEQ original.\n",
+			levelID, relativePath);
+		NativeCustomMusic_Stop();
+		return 0;
+	}
+
+	/* Optional pre-rendered Final Lap OGG. */
+	if (NativeAssets_BuildPath(
+		finalRelativePath,
+		finalPath,
+		sizeof(finalPath)) &&
+		NativeCustomMusic_FileExists(finalPath))
+	{
+		printf("[CustomMusic] Level %d: cargando Final Lap %s\n",
+			levelID, finalRelativePath);
+		fflush(stdout);
+
+		if (!NativeCustomMusic_LoadOgg(
+			finalPath,
+			&newFinalPcm,
+			&newFinalFrameCount,
+			&finalChannels,
+			&finalSampleRate))
+		{
+			printf("[CustomMusic] Final Lap invalido; uso tema normal.\n");
+			fflush(stdout);
+			newFinalPcm = NULL;
+			newFinalFrameCount = 0;
+		}
+		else if ((finalChannels != newChannels) ||
+				 (finalSampleRate != newSampleRate))
+		{
+			printf("[CustomMusic] Final Lap debe tener mismos canales y sample rate; uso tema normal.\n");
+			fflush(stdout);
+			free(newFinalPcm);
+			newFinalPcm = NULL;
+			newFinalFrameCount = 0;
+		}
+	}
+	else
+	{
+		printf("[CustomMusic] Level %d: sin Final Lap custom.\n", levelID);
+		fflush(stdout);
+	}
+
+	NativeAudio_LockOutput();
+	NativeCustomMusic_StopNoLock();
+
+	s_customMusic.pcm = newPcm;
+	s_customMusic.frameCount = newFrameCount;
+	s_customMusic.finalPcm = newFinalPcm;
+	s_customMusic.finalFrameCount = newFinalFrameCount;
+	s_customMusic.finalLapActive = 0;
+
+	s_customMusic.channels = newChannels;
+	s_customMusic.sampleRate = newSampleRate;
+	s_customMusic.positionFp = 0;
+	s_customMusic.stepFp =
+		(u32)(((u64)newSampleRate << CUSTOM_MUSIC_FP_SHIFT) /
+			CUSTOM_MUSIC_OUTPUT_RATE);
+
+	if (s_customMusic.stepFp == 0)
+	{
+		s_customMusic.stepFp = 1;
+	}
+
+	s_customMusic.active = 1;
+	s_customMusic.paused = 0;
+
+	/*
+	 * Ceiling lower than the old fixed 190.
+	 * ChangeVolume will scale this from CTR's music volume.
+	 */
+		s_customMusic.volume = (sdata->vol_Music * 128) / 255;
+	s_customMusic.levelID = levelID;
+
+	NativeAudio_UnlockOutput();
+
+	printf("[CustomMusic] Level %d: OK - %d Hz, %d canal(es), %d frames.\n",
+		levelID, newSampleRate, newChannels, newFrameCount);
+	fflush(stdout);
+
+	return 1;
+}
+
+int NativeCustomMusic_IsActive(void)
+{
+	int active;
+
+	NativeAudio_LockOutput();
+	active = s_customMusic.active;
+	NativeAudio_UnlockOutput();
+
+	return active;
+}
+
+void NativeCustomMusic_Stop(void)
+{
+	NativeAudio_LockOutput();
+	NativeCustomMusic_StopNoLock();
+	NativeAudio_UnlockOutput();
+}
+
+void NativeCustomMusic_SetPaused(int paused)
+{
+	NativeAudio_LockOutput();
+
+	if (s_customMusic.active)
+	{
+		s_customMusic.paused = paused != 0;
+	}
+
+	NativeAudio_UnlockOutput();
+}
+
+void NativeCustomMusic_SetVolume(int volume)
+{
+	int scaled;
+
+	if (volume < 0)
+	{
+		volume = 0;
+	}
+	else if (volume > 255)
+	{
+		volume = 255;
+	}
+
+	/* Keep custom OGG below the previous overly-loud fixed level. */
+	scaled = (volume * 128) / 255;
+
+	NativeAudio_LockOutput();
+
+	if (s_customMusic.active)
+	{
+		s_customMusic.volume = scaled;
+	}
+
+	NativeAudio_UnlockOutput();
+}
+
+void NativeCustomMusic_Restart(void)
+{
+	NativeAudio_LockOutput();
+
+	if (s_customMusic.active)
+	{
+		s_customMusic.positionFp = 0;
+		s_customMusic.paused = 0;
+		s_customMusic.finalLapActive = 0;
+	}
+
+	NativeAudio_UnlockOutput();
+}
+
+void NativeCustomMusic_EnableFinalLap(void)
+{
+	int changed = 0;
+	int hasFinal = 0;
+
+	NativeAudio_LockOutput();
+
+	if (s_customMusic.active)
+	{
+		/*
+		 * IMPORTANT:
+		 * If there is no _final.ogg, do NOT touch position, pause state,
+		 * volume or active state. The normal OGG must continue uninterrupted.
+		 */
+		if (!s_customMusic.finalLapActive &&
+			(s_customMusic.finalPcm != NULL) &&
+			(s_customMusic.finalFrameCount > 0) &&
+			(s_customMusic.frameCount > 0))
+		{
+			u64 normalFrame =
+				s_customMusic.positionFp >> CUSTOM_MUSIC_FP_SHIFT;
+			u64 finalFrame;
+
+			normalFrame %= (u64)s_customMusic.frameCount;
+
+			finalFrame =
+				(normalFrame * (u64)s_customMusic.finalFrameCount) /
+				(u64)s_customMusic.frameCount;
+
+			s_customMusic.positionFp =
+				finalFrame << CUSTOM_MUSIC_FP_SHIFT;
+
+			s_customMusic.finalLapActive = 1;
+			s_customMusic.paused = 0;
+			hasFinal = 1;
+			changed = 1;
+		}
+		else if (s_customMusic.finalLapActive)
+		{
+			hasFinal = 1;
+		}
+	}
+
+	NativeAudio_UnlockOutput();
+
+	if (changed)
+	{
+		printf("[CustomMusic] FINAL LAP -> usando _final.ogg\n");
+	}
+	else if (!hasFinal)
+	{
+		printf("[CustomMusic] FINAL LAP -> sin _final.ogg; OGG normal continua\n");
+	}
+
+	fflush(stdout);
+}
+
+internal s16 *NativeCustomMusic_GetCurrentPcm(void)
+{
+	if (s_customMusic.finalLapActive &&
+		(s_customMusic.finalPcm != NULL) &&
+		(s_customMusic.finalFrameCount > 0))
+	{
+		return s_customMusic.finalPcm;
+	}
+
+	return s_customMusic.pcm;
+}
+
+internal int NativeCustomMusic_GetCurrentFrameCount(void)
+{
+	if (s_customMusic.finalLapActive &&
+		(s_customMusic.finalPcm != NULL) &&
+		(s_customMusic.finalFrameCount > 0))
+	{
+		return s_customMusic.finalFrameCount;
+	}
+
+	return s_customMusic.frameCount;
+}
+
+internal int NativeCustomMusic_ReadSample(int channel)
+{
+	s16 *pcm;
+	int frameCount;
+	u64 frame0;
+	u64 frame1;
+	u32 frac;
+	int sample0;
+	int sample1;
+
+	if (!s_customMusic.active || s_customMusic.paused)
+	{
+		return 0;
+	}
+
+	pcm = NativeCustomMusic_GetCurrentPcm();
+	frameCount = NativeCustomMusic_GetCurrentFrameCount();
+
+	if ((pcm == NULL) || (frameCount <= 0))
+	{
+		return 0;
+	}
+
+	frame0 = s_customMusic.positionFp >> CUSTOM_MUSIC_FP_SHIFT;
+
+	if (frame0 >= (u64)frameCount)
+	{
+		frame0 %= (u64)frameCount;
+		s_customMusic.positionFp = frame0 << CUSTOM_MUSIC_FP_SHIFT;
+	}
+
+	frame1 = frame0 + 1;
+
+	if (frame1 >= (u64)frameCount)
+	{
+		frame1 = 0;
+	}
+
+	if (s_customMusic.channels == 1)
+	{
+		sample0 = pcm[frame0];
+		sample1 = pcm[frame1];
+	}
+	else
+	{
+		sample0 = pcm[frame0 * 2 + channel];
+		sample1 = pcm[frame1 * 2 + channel];
+	}
+
+	frac = (u32)(s_customMusic.positionFp & (CUSTOM_MUSIC_FP_ONE - 1));
+
+	return sample0 +
+		(int)(((s64)(sample1 - sample0) * frac) >> CUSTOM_MUSIC_FP_SHIFT);
+}
+
+void NativeCustomMusic_MixFrameNoLock(
+	int *mixLeft,
+	int *mixRight,
+	s16 masterLeft,
+	s16 masterRight)
+{
+	int left;
+	int right;
+	int frameCount;
+	s64 scaledLeft;
+	s64 scaledRight;
+
+	if (!s_customMusic.active || s_customMusic.paused)
+	{
+		return;
+	}
+
+	frameCount = NativeCustomMusic_GetCurrentFrameCount();
+
+	if (frameCount <= 0)
+	{
+		return;
+	}
+
+	left = NativeCustomMusic_ReadSample(0);
+	right = NativeCustomMusic_ReadSample(
+		s_customMusic.channels == 1 ? 0 : 1);
+
+	scaledLeft = (s64)left * s_customMusic.volume * masterLeft;
+	scaledRight = (s64)right * s_customMusic.volume * masterRight;
+
+	scaledLeft /= (255 * 0x3fff);
+	scaledRight /= (255 * 0x3fff);
+
+	*mixLeft += (int)scaledLeft;
+	*mixRight += (int)scaledRight;
+
+	s_customMusic.positionFp += s_customMusic.stepFp;
+
+	while ((s_customMusic.positionFp >> CUSTOM_MUSIC_FP_SHIFT) >=
+		(u64)frameCount)
+	{
+		s_customMusic.positionFp -=
+			((u64)frameCount << CUSTOM_MUSIC_FP_SHIFT);
+	}
+}
