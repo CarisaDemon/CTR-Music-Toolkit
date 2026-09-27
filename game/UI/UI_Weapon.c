@@ -58,6 +58,9 @@ CTR_STATIC_ASSERT(UI_WEAPON_BG_SHINE_COUNT == 2);
 CTR_STATIC_ASSERT(UI_WEAPON_BG_SHINE_TRANSPARENCY_BASE == 2);
 
 static const u32 UI_WEAPON_BG_SHINE_COLOR = 0xff0000u;
+#if defined(CTR_NATIVE)
+static int s_nativeWeaponRouletteItem[8] = {0};
+#endif
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800507e0-0x80050af8.
 // Draw weapon and wumpa fruit in HUD
@@ -70,6 +73,10 @@ void UI_Weapon_DrawSelf(s16 posX, s16 posY, s16 scale, struct Driver *d)
 	SVec2 pos;
 
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 	itemID = d->heldItemID;
 
 	// If you do have "no weapon icon"
@@ -135,8 +142,19 @@ void UI_Weapon_DrawSelf(s16 posX, s16 posY, s16 scale, struct Driver *d)
 		// If game is not paused
 		if ((gGT->gameMode1 & PAUSE_ALL) == 0)
 		{
-			// random item
-			itemID = rand();
+			// Retail changes the roulette once per content frame. Reusing the
+			// cached item on extra host-refresh updates also avoids consuming RNG
+			// several times faster than the original game.
+#if defined(CTR_NATIVE)
+			if (Platform_GetHighRefreshMode() && (legacyTicks == 0) && (d->driverID >= 0) && (d->driverID < 8))
+			{
+				itemID = s_nativeWeaponRouletteItem[d->driverID];
+			}
+			else
+#endif
+			{
+				itemID = rand();
+			}
 
 			// If you're not in Battle Mode
 			if ((gGT->gameMode1 & BATTLE_MODE) == 0)
@@ -174,6 +192,12 @@ void UI_Weapon_DrawSelf(s16 posX, s16 posY, s16 scale, struct Driver *d)
 					itemID = UI_WEAPON_ITEM_TNT;
 				}
 			}
+#if defined(CTR_NATIVE)
+			if ((!Platform_GetHighRefreshMode() || (legacyTicks > 0)) && (d->driverID >= 0) && (d->driverID < 8))
+			{
+				s_nativeWeaponRouletteItem[d->driverID] = itemID;
+			}
+#endif
 
 			// only change icon once per 2 frames,
 			// take advantage of unused padding
@@ -185,8 +209,12 @@ void UI_Weapon_DrawSelf(s16 posX, s16 posY, s16 scale, struct Driver *d)
 			UI_Lerp2D_HUD(pos.v, d->PickupTimeboxHUD.startX, d->PickupTimeboxHUD.startY, (int)posX, (int)posY, d->PickupTimeboxHUD.cooldown,
 			              UI_WEAPON_ROULETTE_LERP_FRAMES);
 
-			// subtract one from timer
-			d->PickupTimeboxHUD.cooldown--;
+			// subtract retail content frames from timer
+			if (legacyTicks > 0)
+			{
+				int value = d->PickupTimeboxHUD.cooldown - legacyTicks;
+				d->PickupTimeboxHUD.cooldown = (value > 0) ? value : 0;
+			}
 		}
 
 		iconID = itemID + UI_WEAPON_ICON_BASE;
@@ -216,17 +244,22 @@ void UI_Weapon_DrawSelf(s16 posX, s16 posY, s16 scale, struct Driver *d)
 void UI_Weapon_DrawBG(s16 posX, s16 posY, s16 scale, struct Driver *d)
 {
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	// reduce frame timer until it hits zero (unused?)
-	if (d->BattleHUD.juicedUpCooldown != 0)
+	if ((d->BattleHUD.juicedUpCooldown != 0) && (legacyTicks > 0))
 	{
-		d->BattleHUD.juicedUpCooldown--;
+		int value = d->BattleHUD.juicedUpCooldown - legacyTicks;
+		d->BattleHUD.juicedUpCooldown = (value > 0) ? value : 0;
 	}
 
 	int scaleInt = (int)scale;
 
-	// wumpaShineTheta (given to sine)
-	sdata->wumpaShineTheta += UI_WEAPON_BG_SHINE_THETA_STEP;
+	// wumpaShineTheta is authored in retail frames.
+	sdata->wumpaShineTheta += UI_WEAPON_BG_SHINE_THETA_STEP * legacyTicks;
 
 	int shineScale = scaleInt * UI_WEAPON_BG_SHINE_SCALE_MUL >> UI_WEAPON_BG_SHINE_SCALE_SHIFT;
 

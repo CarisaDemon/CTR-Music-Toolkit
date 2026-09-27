@@ -2192,6 +2192,26 @@ internal s32 CollMoved_PlayerSearch_StepVelocity(s32 velocity, s32 elapsedTimeMS
 	return CTR_MipsSra(CTR_MipsMulLo(CTR_MipsSra(CTR_MipsMulLo(velocity, elapsedTimeMS), 5), multiplier), 12);
 }
 
+#if defined(CTR_NATIVE)
+internal s32 CollMoved_PlayerSearch_ScaleVelocityHighRefresh(struct Driver *d, int axis, s32 velocity, s32 elapsedTimeMS)
+{
+	static s32 residual[8][3];
+	const int driverID = (int)d->driverID;
+	long long accum;
+	s32 scaled;
+
+	if (!Platform_GetHighRefreshMode() || driverID < 0 || driverID >= 8 || axis < 0 || axis >= 3)
+	{
+		return CTR_MipsSra(CTR_MipsMulLo(velocity, elapsedTimeMS), 5);
+	}
+
+	accum = (long long)velocity * (long long)elapsedTimeMS + (long long)residual[driverID][axis];
+	scaled = (s32)(accum >> 5);
+	residual[driverID][axis] = (s32)(accum - ((long long)scaled << 5));
+	return scaled;
+}
+#endif
+
 internal void CollMoved_PlayerSearch_SetBBoxAxis(struct ScratchpadStruct *sps, s32 axis, s16 current, s16 next)
 {
 	s16 radius = sps->Input1.hitRadius;
@@ -2292,13 +2312,37 @@ void COLL_MOVED_PlayerSearch(struct Thread *t, struct Driver *d)
 
 	COLL_MOVED_FindScrub(NULL, 0, sps);
 
+#if defined(CTR_NATIVE)
+	Vec3 nativeFrameVelocity = {
+	    .x = CollMoved_PlayerSearch_ScaleVelocityHighRefresh(d, 0, d->velocity.x, gGT->elapsedTimeMS),
+	    .y = CollMoved_PlayerSearch_ScaleVelocityHighRefresh(d, 1, d->velocity.y, gGT->elapsedTimeMS),
+	    .z = CollMoved_PlayerSearch_ScaleVelocityHighRefresh(d, 2, d->velocity.z, gGT->elapsedTimeMS),
+	};
+#endif
+
 	for (s32 iterations = 15; iterations != 0; iterations--)
 	{
+#if defined(CTR_NATIVE)
+		Vec3 velocity;
+		if (Platform_GetHighRefreshMode())
+		{
+			velocity.x = CTR_MipsSra(CTR_MipsMulLo(nativeFrameVelocity.x, multiplier), 12);
+			velocity.y = CTR_MipsSra(CTR_MipsMulLo(nativeFrameVelocity.y, multiplier), 12);
+			velocity.z = CTR_MipsSra(CTR_MipsMulLo(nativeFrameVelocity.z, multiplier), 12);
+		}
+		else
+		{
+			velocity.x = CollMoved_PlayerSearch_StepVelocity(d->velocity.x, gGT->elapsedTimeMS, multiplier);
+			velocity.y = CollMoved_PlayerSearch_StepVelocity(d->velocity.y, gGT->elapsedTimeMS, multiplier);
+			velocity.z = CollMoved_PlayerSearch_StepVelocity(d->velocity.z, gGT->elapsedTimeMS, multiplier);
+		}
+#else
 		Vec3 velocity = {
 		    .x = CollMoved_PlayerSearch_StepVelocity(d->velocity.x, gGT->elapsedTimeMS, multiplier),
 		    .y = CollMoved_PlayerSearch_StepVelocity(d->velocity.y, gGT->elapsedTimeMS, multiplier),
 		    .z = CollMoved_PlayerSearch_StepVelocity(d->velocity.z, gGT->elapsedTimeMS, multiplier),
 		};
+#endif
 
 		sps->boolDidTouchQuadblock = 0;
 		sps->numTrianglesTested = 0;
@@ -2325,6 +2369,19 @@ void COLL_MOVED_PlayerSearch(struct Thread *t, struct Driver *d)
 
 		if ((next.x == current.x) && (next.y == current.y) && (next.z == current.z))
 		{
+#if defined(CTR_NATIVE)
+			// At high refresh rates a valid movement step is often smaller than one
+			// whole collision-map unit after the retail >>8 conversion. Retail never
+			// sees this often at 30 Hz. Preserve the fractional movement instead of
+			// dropping it entirely; collision will be swept normally once the stored
+			// 24.8 position crosses an integer map coordinate.
+			if (Platform_GetHighRefreshMode())
+			{
+				d->posCurr.x = CTR_MipsAddLo(d->posCurr.x, velocity.x);
+				d->posCurr.y = CTR_MipsAddLo(d->posCurr.y, velocity.y);
+				d->posCurr.z = CTR_MipsAddLo(d->posCurr.z, velocity.z);
+			}
+#endif
 			break;
 		}
 

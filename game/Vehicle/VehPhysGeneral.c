@@ -117,6 +117,40 @@ void VehPhysGeneral_PhysAngular(struct Thread *thread, struct Driver *driver)
 	int rotCurrW_interp;
 	s8 simpTurnState;
 	s16 driftAngleCurr_og;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+
+	if (Platform_GetHighRefreshMode() &&
+	    (driver->kartState == KS_NORMAL) &&
+	    ((driver->actionsFlagSet & ACTION_TOUCH_GROUND) != 0) &&
+	    (driver->simpTurnState == 0))
+	{
+		int idleSpeed = driver->speedApprox;
+		int idleBase = driver->baseSpeed;
+		int idleFire = driver->fireSpeed;
+		if (idleSpeed < 0) idleSpeed = -idleSpeed;
+		if (idleBase < 0) idleBase = -idleBase;
+		if (idleFire < 0) idleFire = -idleFire;
+
+		if ((idleSpeed <= 0x100) && (idleBase <= 0x20) && (idleFire <= 0x20))
+		{
+			// Freeze the entire angular presentation while physically stopped.
+			// Running the retail spring/terrain angular solver 200 times a second
+			// lets tiny collision-normal noise alternate every host frame.
+			driver->turnWobbleTimer = 0;
+			driver->turnWobbleAngle = 0;
+			driver->turnWobbleVelocity = 0;
+			driver->rotationSpinRate = 0;
+			driver->turnAngleLerpVel = 0;
+			driver->turnAngleLerpTarget = 0;
+			driver->rotCurr.w = 0;
+			driver->rotPrev.w = 0;
+			driver->rotCurr.y = driver->angle;
+			return;
+		}
+	}
+#endif
 
 	PhysLerpRot(driver, 0);
 
@@ -328,7 +362,14 @@ void VehPhysGeneral_PhysAngular(struct Thread *thread, struct Driver *driver)
 
 		turnResistMinBitshift = CTR_MipsSra(CTR_MipsMulLo(driver->const_SteerAccelTurnVelScale, turnResistMinBitshift), 8);
 
+#if defined(CTR_NATIVE)
+		{
+			const int legacyTicks = Platform_GetLegacy30HzTicks();
+			driver->numFramesSpentSteering = (s16)CTR_MipsAddLo((u16)driver->numFramesSpentSteering, legacyTicks);
+		}
+#else
 		driver->numFramesSpentSteering = (s16)CTR_MipsAddLo((u16)driver->numFramesSpentSteering, 1);
+#endif
 
 		// the higher the value of turnResistMaxBitshift the more steering is "locked up"
 		// try setting mov r3, xxxx at 80060170 for proof
@@ -422,18 +463,66 @@ LAB_80060284:
 		{
 			rotCurrW_interp = CTR_MipsNegLo(rotCurrW_original);
 		}
-		rotCurrW_interp = VehCalc_InterpBySpeed(turnResistMax, rotCurrW_interp, 0);
-		forwardDir = (s16)rotCurrW_interp;
+		if (legacyTicks > 0)
+		{
+			rotCurrW_interp = VehCalc_InterpBySpeed(turnResistMax,
+			    CTR_MipsMulLo(rotCurrW_interp, legacyTicks), 0);
+			forwardDir = (s16)rotCurrW_interp;
+		}
+		else
+		{
+			forwardDir = (s16)turnResistMax;
+		}
 	}
 	else
 	{
-		turnResistMaxBitshift = CTR_MipsSubLo(turnResistMaxBitshift, 1);
-		forwardDir = (s16)CTR_MipsAddLo(driver->turnWobbleAngle, rotCurrW_original);
+		if (legacyTicks > 0)
+		{
+			turnResistMaxBitshift = CTR_MipsSubLo(turnResistMaxBitshift, legacyTicks);
+			if (turnResistMaxBitshift < 0) turnResistMaxBitshift = 0;
+			forwardDir = (s16)CTR_MipsAddLo(driver->turnWobbleAngle,
+			    CTR_MipsMulLo(rotCurrW_original, legacyTicks));
+		}
+		else
+		{
+			forwardDir = driver->turnWobbleAngle;
+		}
 	}
 	angle = driver->angle;
 	driver->turnWobbleTimer = (s16)turnResistMaxBitshift;
 	driver->turnWobbleAngle = forwardDir;
 	driver->turnWobbleVelocity = (s16)rotCurrW_original;
+#if defined(CTR_NATIVE)
+	// Treat tiny high-refresh integration noise around zero as true idle.
+	// Exact ==0 checks miss the +/-1..32 values produced by small 200 Hz steps,
+	// which lets steering/wobble state alternate forever while visually stopped.
+	{
+		int idleSpeed = driver->speedApprox;
+		int idleBase = driver->baseSpeed;
+		int idleFire = driver->fireSpeed;
+		if (idleSpeed < 0) idleSpeed = -idleSpeed;
+		if (idleBase < 0) idleBase = -idleBase;
+		if (idleFire < 0) idleFire = -idleFire;
+
+		if (Platform_GetHighRefreshMode() &&
+		    (driver->kartState == KS_NORMAL) &&
+		    ((actionsFlagSet & ACTION_TOUCH_GROUND) != 0) &&
+		    (driver->simpTurnState == 0) &&
+		    (idleSpeed <= 0x100) && (idleBase <= 0x20) && (idleFire <= 0x20))
+		{
+			driver->turnWobbleTimer = 0;
+			driver->turnWobbleAngle = 0;
+			driver->turnWobbleVelocity = 0;
+			driver->rotationSpinRate = 0;
+			driver->turnAngleLerpVel = 0;
+			driver->turnAngleLerpTarget = 0;
+			forwardDir = 0;
+			driftAngleCurr_Final = 0;
+			turnResistMinBitshift = 0;
+			speedApprox = 0;
+		}
+	}
+#endif
 	rotCurrW_interp = VehCalc_MapToRange(speedApprox, 0, VEH_PHYS_ANGULAR_AIR_TURN_SPEED_MAX, classSpeed_halved, 0);
 	rotCurrW_original = CTR_MipsSra(CTR_MipsMulLo(rotCurrW_interp, elapsedTimeMS), VEH_PHYS_ANGULAR_TURN_INTEGRATION_SHIFT);
 	rotCurrW_interp = rotCurrW_original;
@@ -593,6 +682,26 @@ static int VehPhysGeneral_Jump_Div4TowardZero(int value)
 	return CTR_MipsSra(value, 2);
 }
 
+#if defined(CTR_NATIVE)
+static int VehPhysGeneral_ScaleAccelImpulseHighRefresh(struct Driver *d, int acceleration, int elapsedTimeMS)
+{
+	static s32 residual[8];
+	const int driverID = (int)d->driverID;
+	long long accum;
+	int impulse;
+
+	if (!Platform_GetHighRefreshMode() || driverID < 0 || driverID >= 8)
+	{
+		return CTR_MipsSra(CTR_MipsMulLo(acceleration, elapsedTimeMS), 5);
+	}
+
+	accum = (long long)acceleration * (long long)elapsedTimeMS + (long long)residual[driverID];
+	impulse = (int)(accum >> 5);
+	residual[driverID] = (s32)(accum - ((long long)impulse << 5));
+	return impulse;
+}
+#endif
+
 static Vec3 VehPhysGeneral_Jump_RotateLoadedVector(s16 vx, s16 vy, s16 vz)
 {
 	Vec3 out;
@@ -621,6 +730,12 @@ void VehPhysGeneral_JumpAndFriction(struct Thread *t, struct Driver *d)
 		int ampTurn = VehPhysGeneral_Jump_Abs(CTR_MipsSra((s16)d->ampTurnState, 8));
 
 		int turnDecrease = VehCalc_MapToRange(ampTurn, 0, (u8)d->const_BackwardTurnRate, 0, (int)d->const_TurnDecreaseRate);
+#if defined(CTR_NATIVE)
+		if (Platform_GetHighRefreshMode())
+		{
+			turnDecrease = CTR_MipsMulLo(turnDecrease, Platform_GetLegacy30HzTicks());
+		}
+#endif
 		int baseSpeed = d->baseSpeed;
 		int absBaseSpeed = VehPhysGeneral_Jump_Abs(baseSpeed);
 
@@ -653,6 +768,33 @@ void VehPhysGeneral_JumpAndFriction(struct Thread *t, struct Driver *d)
 	}
 
 	Vec3 movement = d->velocity;
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() &&
+	    (d->kartState == KS_NORMAL) &&
+	    ((d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0) &&
+	    (d->simpTurnState == 0))
+	{
+		int idleSpeed = d->speedApprox;
+		int idleBase = d->baseSpeed;
+		int idleFire = d->fireSpeed;
+		if (idleSpeed < 0) idleSpeed = -idleSpeed;
+		if (idleBase < 0) idleBase = -idleBase;
+		if (idleFire < 0) idleFire = -idleFire;
+		if ((idleSpeed <= 0x100) && (idleBase <= 0x20) && (idleFire <= 0x20))
+		{
+			// High-refresh collision/ground-normal corrections can leave tiny
+			// nonzero velocity while the kart is effectively stopped. Kill only
+			// that idle residue so camera and save-screen proximity tests see a
+			// stable stationary kart instead of periodic movement pulses.
+			movement.x = 0;
+			movement.y = 0;
+			movement.z = 0;
+			d->velocity = movement;
+			d->speed = 0;
+			d->speedApprox = 0;
+		}
+	}
+#endif
 	int speedLoss = 0;
 
 	if ((d->actionsFlagSet & ACTION_TOUCH_GROUND) == 0)
@@ -703,7 +845,11 @@ void VehPhysGeneral_JumpAndFriction(struct Thread *t, struct Driver *d)
 
 PROCESS_ACCEL:
 {
+#if defined(CTR_NATIVE)
+	int forwardImpulse = VehPhysGeneral_ScaleAccelImpulseHighRefresh(d, acceleration, sdata->gGT->elapsedTimeMS);
+#else
 	int forwardImpulse = CTR_MipsSra(CTR_MipsMulLo(acceleration, sdata->gGT->elapsedTimeMS), 5);
+#endif
 	Vec3 rotated = VehPhysGeneral_Jump_RotateLoadedVector(0, 0, (s16)forwardImpulse);
 
 	if (d->baseSpeed < 0)

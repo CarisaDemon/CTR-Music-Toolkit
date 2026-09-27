@@ -319,7 +319,18 @@ void MM_Characters_DrawWindows(b32 boolShowDrivers)
 		driverInst->matrix.t[2] = D230.characterSelectDriverModel.pos.z;
 
 		s16 *moveTimer = &D230.characterSelectModelMoveTimer[playerIndex];
-		s16 nextMoveTimer = *moveTimer + -1;
+		s16 nextMoveTimer = *moveTimer;
+#if defined(CTR_NATIVE)
+		{
+			const int moveTicks = Platform_GetLegacy30HzTicks();
+			if (moveTicks > 0)
+			{
+				nextMoveTimer = (s16)((*moveTimer > moveTicks) ? (*moveTimer - moveTicks) : 0);
+			}
+		}
+#else
+		nextMoveTimer = *moveTimer + -1;
+#endif
 
 		// If no transition between players
 		if (*moveTimer == 0)
@@ -609,6 +620,10 @@ void MM_Characters_MenuProc(struct RectMenu *unused)
 	int direction;
 
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	u32 *ot = gGT->backBuffer->otMem.uiOT;
 
@@ -635,17 +650,18 @@ void MM_Characters_MenuProc(struct RectMenu *unused)
 			// menu is now in focus
 			D230.characterSelectMenuState = IN_MENU;
 		}
-		else
+		else if (legacyTicks > 0)
 		{
-			D230.characterSelectTransitionFrame--;
+			D230.characterSelectTransitionFrame -= legacyTicks;
+			if (D230.characterSelectTransitionFrame < 0) D230.characterSelectTransitionFrame = 0;
 		}
 	}
 
 	// if transitioning out
 	if (D230.characterSelectMenuState == EXITING_MENU)
 	{
-		// increase frame
-		D230.characterSelectTransitionFrame++;
+		// increase retail content frame
+		D230.characterSelectTransitionFrame += legacyTicks;
 
 		// if more than 12 frames
 		if (D230.characterSelectTransitionFrame > MM_CHARACTER_SELECT_TRANSITION_FRAMES)
@@ -1114,8 +1130,13 @@ dontDrawSelectCharacter:
 			                   (JUSTIFY_CENTER | ORANGE));
 		}
 
-		// spin the character
+		// Character preview rotation is authored in retail frames, not host frames.
+#if defined(CTR_NATIVE)
+		D230.characterSelectPlayerState.angle[playerIndex] +=
+		    MM_CHARACTER_SELECT_SPIN_STEP * Platform_GetLegacy30HzTicks();
+#else
 		D230.characterSelectPlayerState.angle[playerIndex] += MM_CHARACTER_SELECT_SPIN_STEP;
+#endif
 	}
 
 	// reset

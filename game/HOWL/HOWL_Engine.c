@@ -137,6 +137,14 @@ s16 EngineAudio_Recalculate(u32 soundID, u32 sfx)
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8002f5f4-0x8002fc28
 void EngineSound_Player(struct Driver *driver)
 {
+#if defined(CTR_NATIVE)
+	// Engine pitch/volume filters are authored as one step per retail frame.
+	// Keep their cadence independent from the host display refresh.
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+	{
+		return;
+	}
+#endif
 	u8 id = driver->driverID;
 	u32 volume;
 	u32 distortion;
@@ -466,6 +474,12 @@ static u32 EngineSound_AI_CalculateDistortion(struct Driver *ai, int distanceDel
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8002fc64-0x8002ff28
 void EngineSound_AI(struct Driver *ai, struct Driver *cameraDriver, int slotIndex, int distance, int distanceDelta, u32 lr)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+	{
+		return;
+	}
+#endif
 	u32 volume;
 	u32 distortion;
 	int targetPitch = EngineSound_AI_GetTargetPitch(ai);

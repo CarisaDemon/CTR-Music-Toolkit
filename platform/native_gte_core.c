@@ -7,6 +7,10 @@
 #include <macros.h>
 #include <psx/gtereg.h>
 #include <psx/libgte.h>
+#include <stdint.h>
+#if defined(CTR_NATIVE)
+#include <platform.h>
+#endif
 
 GTERegisters gteRegs;
 
@@ -38,6 +42,264 @@ GTERegisters gteRegs;
 global_variable int m_sf;
 global_variable s64 m_mac0;
 global_variable s64 m_mac3;
+
+#if defined(CTR_NATIVE)
+#define NATIVE_GTE_SUBPIXEL_BUCKETS (1u << 16)
+#define NATIVE_GTE_SUBPIXEL_WAYS 4u
+#define NATIVE_GTE_SUBPIXEL_MAP_SIZE (NATIVE_GTE_SUBPIXEL_BUCKETS * NATIVE_GTE_SUBPIXEL_WAYS)
+#define NATIVE_GTE_SUBPIXEL_VALUE_BUCKETS (1u << 15)
+#define NATIVE_GTE_SUBPIXEL_VALUE_WAYS 4u
+#define NATIVE_GTE_SUBPIXEL_VALUE_MAP_SIZE (NATIVE_GTE_SUBPIXEL_VALUE_BUCKETS * NATIVE_GTE_SUBPIXEL_VALUE_WAYS)
+#define NATIVE_GTE_SUBPIXEL_VALUE_TOLERANCE 1024
+struct NativeGTESubpixelEntry
+{
+	const void *address;
+	u32 packedSxy;
+	s32 x16;
+	s32 y16;
+	u32 generation;
+};
+struct NativeGTESubpixelValueEntry
+{
+	u32 packedSxy;
+	s32 x16;
+	s32 y16;
+	u32 generation;
+	u8 ambiguous;
+};
+
+global_variable struct NativeGTESubpixelEntry s_nativeGTESubpixelMap[NATIVE_GTE_SUBPIXEL_MAP_SIZE];
+global_variable struct NativeGTESubpixelValueEntry s_nativeGTESubpixelValueMap[NATIVE_GTE_SUBPIXEL_VALUE_MAP_SIZE];
+global_variable s32 s_nativeGTESxyX16[3];
+global_variable s32 s_nativeGTESxyY16[3];
+global_variable u32 s_nativeGTESubpixelGeneration = 1;
+
+void NativeGTE_SubpixelBeginFrame(void)
+{
+	s_nativeGTESubpixelGeneration++;
+	if (s_nativeGTESubpixelGeneration == 0)
+	{
+		memset(s_nativeGTESubpixelMap, 0, sizeof(s_nativeGTESubpixelMap));
+		memset(s_nativeGTESubpixelValueMap, 0, sizeof(s_nativeGTESubpixelValueMap));
+		s_nativeGTESubpixelGeneration = 1;
+	}
+}
+
+internal u32 NativeGTE_SubpixelHash(const void *address)
+{
+	const u32 key = (u32)(uintptr_t)address;
+	const u32 bucket = ((key >> 2) ^ (key >> 11) ^ (key >> 19)) & (NATIVE_GTE_SUBPIXEL_BUCKETS - 1);
+	return bucket * NATIVE_GTE_SUBPIXEL_WAYS;
+}
+
+internal u32 NativeGTE_SubpixelValueHash(u32 packedSxy)
+{
+	const u32 mixed = packedSxy * 2654435761u;
+	return ((mixed ^ (mixed >> 16)) & (NATIVE_GTE_SUBPIXEL_VALUE_BUCKETS - 1)) * NATIVE_GTE_SUBPIXEL_VALUE_WAYS;
+}
+
+internal s64 NativeGTE_SubpixelAbsDiff(s32 a, s32 b)
+{
+	s64 d = (s64)a - (s64)b;
+	return (d < 0) ? -d : d;
+}
+
+internal void NativeGTE_SaveSXYValue(u32 packedSxy, s32 x16, s32 y16)
+{
+	const u32 base = NativeGTE_SubpixelValueHash(packedSxy);
+	struct NativeGTESubpixelValueEntry *entry = NULL;
+
+	for (u32 way = 0; way < NATIVE_GTE_SUBPIXEL_VALUE_WAYS; way++)
+	{
+		struct NativeGTESubpixelValueEntry *candidate = &s_nativeGTESubpixelValueMap[base + way];
+		if ((candidate->generation == s_nativeGTESubpixelGeneration) && (candidate->packedSxy == packedSxy))
+		{
+			entry = candidate;
+			break;
+		}
+		if ((entry == NULL) && (candidate->generation != s_nativeGTESubpixelGeneration))
+		{
+			entry = candidate;
+		}
+	}
+
+	if (entry == NULL)
+	{
+		entry = &s_nativeGTESubpixelValueMap[base + ((packedSxy >> 5) & (NATIVE_GTE_SUBPIXEL_VALUE_WAYS - 1))];
+		entry->generation = 0;
+	}
+
+	if ((entry->generation == s_nativeGTESubpixelGeneration) && (entry->packedSxy == packedSxy))
+	{
+		// Keep the first fractional projection for this packed PS1 coordinate.
+		// Averaging later projections made the same vertex move inside a frame
+		// depending on draw order, which showed up as shimmer and open seams.
+		return;
+	}
+
+	entry->packedSxy = packedSxy;
+	entry->x16 = x16;
+	entry->y16 = y16;
+	entry->generation = s_nativeGTESubpixelGeneration;
+	entry->ambiguous = 0;
+}
+
+internal int NativeGTE_GetSXYValue(u32 packedSxy, float *x, float *y)
+{
+	const u32 base = NativeGTE_SubpixelValueHash(packedSxy);
+	for (u32 way = 0; way < NATIVE_GTE_SUBPIXEL_VALUE_WAYS; way++)
+	{
+		const struct NativeGTESubpixelValueEntry *entry = &s_nativeGTESubpixelValueMap[base + way];
+		if ((entry->generation == s_nativeGTESubpixelGeneration) &&
+		    (entry->packedSxy == packedSxy))
+		{
+			*x = (float)entry->x16 / 65536.0f;
+			*y = (float)entry->y16 / 65536.0f;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+internal u32 NativeGTE_PackFixedSxy(s32 x16, s32 y16)
+{
+	const s16 x = (s16)(x16 >> 16);
+	const s16 y = (s16)(y16 >> 16);
+	return (u32)(u16)x | ((u32)(u16)y << 16);
+}
+
+static void NativeGTE_SaveSXY(void *address, u32 packedSxy, s32 x16, s32 y16)
+{
+	struct NativeGTESubpixelEntry *entry;
+	if (!address) return;
+
+	{
+		const u32 base = NativeGTE_SubpixelHash(address);
+		entry = NULL;
+
+		// Four-way set association prevents unrelated packet addresses from
+		// evicting each other's fractional SXY within the same frame. The old
+		// direct-mapped table could leave only some vertices of a polygon with
+		// subpixel data, which visibly increased wobble.
+		for (u32 way = 0; way < NATIVE_GTE_SUBPIXEL_WAYS; way++)
+		{
+			struct NativeGTESubpixelEntry *candidate = &s_nativeGTESubpixelMap[base + way];
+			if ((candidate->generation == s_nativeGTESubpixelGeneration) && (candidate->address == address))
+			{
+				entry = candidate;
+				break;
+			}
+			if ((entry == NULL) && (candidate->generation != s_nativeGTESubpixelGeneration))
+			{
+				entry = candidate;
+			}
+		}
+		if (entry == NULL)
+		{
+			// Extremely rare 5th collision in one bucket: deterministically replace
+			// one way rather than corrupting a neighbouring bucket.
+			entry = &s_nativeGTESubpixelMap[base + ((u32)(uintptr_t)address >> 4 & (NATIVE_GTE_SUBPIXEL_WAYS - 1))];
+		}
+	}
+
+	entry->address = address;
+	entry->packedSxy = packedSxy;
+	entry->x16 = x16;
+	entry->y16 = y16;
+	entry->generation = s_nativeGTESubpixelGeneration;
+}
+
+void NativeGTE_RecordSXYStore(void *address, int fifoIndex)
+{
+	u32 packedSxy;
+	if (fifoIndex<0 || fifoIndex>2) return;
+	packedSxy = gteRegs.CP2D.p[12+fifoIndex].d;
+	NativeGTE_SaveSXY(address, packedSxy,
+	 s_nativeGTESxyX16[fifoIndex],s_nativeGTESxyY16[fifoIndex]);
+	// Also retain an address-independent projection key. A large amount of CTR
+	// copies packed SXY values through temporary packets without using the GTE
+	// store macros, which used to lose the fractional coordinate completely.
+	NativeGTE_SaveSXYValue(packedSxy,
+	 s_nativeGTESxyX16[fifoIndex],s_nativeGTESxyY16[fifoIndex]);
+}
+
+int NativeGTE_GetStoredSubpixel(const void *address, u32 packedSxy, float *x, float *y)
+{
+	const struct NativeGTESubpixelEntry *entry;
+
+	if ((address == NULL) || (x == NULL) || (y == NULL))
+	{
+		return 0;
+	}
+
+	{
+		const u32 base = NativeGTE_SubpixelHash(address);
+		entry = NULL;
+		for (u32 way = 0; way < NATIVE_GTE_SUBPIXEL_WAYS; way++)
+		{
+			const struct NativeGTESubpixelEntry *candidate = &s_nativeGTESubpixelMap[base + way];
+			if ((candidate->generation == s_nativeGTESubpixelGeneration) &&
+			    (candidate->address == address) && (candidate->packedSxy == packedSxy))
+			{
+				entry = candidate;
+				break;
+			}
+		}
+	}
+	if (entry == NULL)
+	{
+		return NativeGTE_GetSXYValue(packedSxy, x, y);
+	}
+
+	// A propagated packet may explicitly carry only the integer PS1 position.
+	// Prefer an unambiguous value-keyed projection if one exists for that SXY.
+	{
+		const s32 integerX16 = (s32)(s16)packedSxy * 65536;
+		const s32 integerY16 = (s32)(s16)(packedSxy >> 16) * 65536;
+		if ((entry->x16 == integerX16) && (entry->y16 == integerY16) &&
+		    NativeGTE_GetSXYValue(packedSxy, x, y))
+		{
+			return 1;
+		}
+	}
+
+	*x = (float)entry->x16 / 65536.0f;
+	*y = (float)entry->y16 / 65536.0f;
+	return 1;
+}
+void NativeGTE_CopySXYStore(void *dst, const void *src, u32 packed)
+{
+	float x,y;
+	// A missing source overwrites stale metadata with exact integer positions.
+	if (!NativeGTE_GetStoredSubpixel(src,packed,&x,&y))
+	{ x=(s16)packed; y=(s16)(packed>>16); }
+	NativeGTE_SaveSXY(dst,packed,(s32)(x*65536.0f),(s32)(y*65536.0f));
+}
+void NativeGTE_LoadSXYStore(const void *src, u32 packed, int index)
+{
+	float x,y;
+	if (!NativeGTE_GetStoredSubpixel(src,packed,&x,&y))
+	{ x=(s16)packed; y=(s16)(packed>>16); }
+	s_nativeGTESxyX16[index]=(s32)(x*65536.0f);
+	s_nativeGTESxyY16[index]=(s32)(y*65536.0f);
+}
+void NativeGTE_CopySXYFIFO(int src, int dst)
+{
+	s_nativeGTESxyX16[dst]=s_nativeGTESxyX16[src];
+	s_nativeGTESxyY16[dst]=s_nativeGTESxyY16[src];
+}
+void NativeGTE_WriteSXYRegister(u32 packed, int reg)
+{
+	if (reg<12 || reg>15) return;
+	if (reg==15)
+	{
+		NativeGTE_CopySXYFIFO(1,0); NativeGTE_CopySXYFIFO(2,1); reg=14;
+	}
+	s_nativeGTESxyX16[reg-12]=(s32)(s16)packed*65536;
+	s_nativeGTESxyY16[reg-12]=(s32)(s16)(packed>>16)*65536;
+}
+
+#endif
 
 u32 gte_leadingzerocount(u32 lzcs)
 {
@@ -316,9 +578,54 @@ internal int GTE_RotTransPers(int idx, int lm)
 	h_over_sz3 = Lm_E(gte_divide(C2_H, C2_SZ3));
 	C2_SXY0 = C2_SXY1;
 	C2_SXY1 = C2_SXY2;
-	C2_SX2 = Lm_G1(F((s64)C2_OFX + ((s64)C2_IR1 * h_over_sz3)) >> 16);
-	C2_SY2 = Lm_G2(F((s64)C2_OFY + ((s64)C2_IR2 * h_over_sz3)) >> 16);
+#if defined(CTR_NATIVE)
+	s_nativeGTESxyX16[0] = s_nativeGTESxyX16[1];
+	s_nativeGTESxyY16[0] = s_nativeGTESxyY16[1];
+	s_nativeGTESxyX16[1] = s_nativeGTESxyX16[2];
+	s_nativeGTESxyY16[1] = s_nativeGTESxyY16[2];
+#endif
+	// Correct the perspective term before screen clipping, around OFX (the
+	// current viewport center). 4:3 -> 16:9 needs 3/4 horizontal scale:
+	// the display's 4/3 expansion cancels it while revealing more scene.
+	// Keep H, Y, depth and fog unchanged, including split-screen cameras.
+	s64 projectedX = (s64)C2_IR1 * h_over_sz3;
+#if defined(CTR_NATIVE)
+	if (Platform_GetWideMode())
+	{
+		projectedX = (projectedX * 3) / 4;
+	}
+#endif
+	{
+		s64 screenX16 = F((s64)C2_OFX + projectedX);
+		C2_SX2 = Lm_G1(screenX16 >> 16);
+#if defined(CTR_NATIVE)
+		if ((screenX16 >> 16) != C2_SX2)
+		{
+			screenX16 = (s64)C2_SX2 << 16;
+		}
+		s_nativeGTESxyX16[2] = (s32)screenX16;
+#endif
+	}
+	{
+		s64 screenY16 = F((s64)C2_OFY + ((s64)C2_IR2 * h_over_sz3));
+		C2_SY2 = Lm_G2(screenY16 >> 16);
+#if defined(CTR_NATIVE)
+		if ((screenY16 >> 16) != C2_SY2)
+		{
+			screenY16 = (s64)C2_SY2 << 16;
+		}
+		s_nativeGTESxyY16[2] = (s32)screenY16;
+#endif
+	}
 
+#if defined(CTR_NATIVE)
+	// Use the fractional result produced by the same quantized GTE divide that
+	// generated the retail integer SXY. This keeps shared edges topologically
+	// identical to PS1 while retaining the low 16 bits for smooth presentation.
+	// A separate floating-point px/pz projection looked "more precise" but was
+	// not the same projection and caused shimmer and cracks.
+	NativeGTE_SaveSXYValue(C2_SXY2, s_nativeGTESxyX16[2], s_nativeGTESxyY16[2]);
+#endif
 	return h_over_sz3;
 }
 

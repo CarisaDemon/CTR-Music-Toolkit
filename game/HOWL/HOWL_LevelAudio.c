@@ -106,7 +106,11 @@ void Level_SoundLoopSet(int *soundIDCount, u32 soundID, u32 volume)
 void Level_SoundLoopFade(struct SoundFadeInput *fade, u32 soundID, int desiredVolume, int fadeStep)
 {
 	int currentVolume = fade->currentVolume;
+	int legacyTicks = 1;
 	b32 clamped;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	if (currentVolume == desiredVolume)
 	{
@@ -114,6 +118,11 @@ void Level_SoundLoopFade(struct SoundFadeInput *fade, u32 soundID, int desiredVo
 	}
 
 	fade->desiredVolume = desiredVolume;
+	if (legacyTicks <= 0)
+	{
+		return;
+	}
+	fadeStep *= legacyTicks;
 
 	if (currentVolume < desiredVolume)
 	{
@@ -150,11 +159,16 @@ static u32 Level_RandomFX_NextAudioRNG(void)
 void Level_RandomFX(int *cooldown, u32 soundID, int baseCooldown, u32 randomRange, int volumeScale)
 {
 	int cooldownValue = *cooldown;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
-	if (cooldownValue > 0)
+	if ((cooldownValue > 0) && (legacyTicks > 0))
 	{
-		*cooldown = cooldownValue - 1;
-		cooldownValue = *cooldown;
+		cooldownValue -= legacyTicks;
+		if (cooldownValue < 0) cooldownValue = 0;
+		*cooldown = cooldownValue;
 	}
 
 	if (cooldownValue == 0)

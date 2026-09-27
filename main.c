@@ -141,6 +141,7 @@ static int NativeArg_IsVersion(const char *arg)
 }
 
 
+
 int main(int argc, char *argv[])
 {
 	for (int argIndex = 1; argIndex < argc; argIndex++)
@@ -191,7 +192,7 @@ int main(int argc, char *argv[])
 
 #ifdef USE_16BY9
 	printf("[CTR Native] Widescreen\n");
-	Platform_Init("Crash Team Racing", 1280, 720);
+	Platform_Init("Crash Team Racing", 1920, 1080);
 #else
 	printf("[CTR Native] 4:3\n");
 	Platform_Init("Crash Team Racing", 800, 600);

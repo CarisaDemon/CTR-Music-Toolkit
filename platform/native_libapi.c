@@ -7,19 +7,39 @@
 #include <macros.h>
 
 #include <psx/libapi.h>
+#include <SDL3/SDL.h>
 
-// CTR's retail timer reads root counter 1 once per VSync and converts units
-// through divisor 0x147e before MainFrame_GameLogic scales to elapsedTimeMS.
-// Native owns VBlank emission, so advance RCNT1 from emitted VBlanks instead
-// of SDL wall time. Host wait jitter otherwise leaks into vehicle physics.
-#define CTR_NATIVE_RCNT1_TICKS_PER_VBLANK 263u
+// CTR converts RCNT1 units through divisor 0x147e and then scales the result
+// by 32/100 into elapsedTimeMS. Retail/native 30 FPS previously accumulated
+// about 263 RCNT units per 60 Hz VBlank, i.e. 15780 units/second. Drive that
+// same clock from the host high-resolution timer so game logic can run above
+// 30 FPS without receiving zero time between VBlanks.
+#define CTR_NATIVE_RCNT1_TICKS_PER_SECOND 15780u
 
-global_variable u64 s_rootCounterValue = 0;
+global_variable u64 s_rootCounterEpoch = 0;
 global_variable u64 s_rootCounterBase = 0;
+
+internal u64 NativeRCnt_CurrentTicks(void)
+{
+	const u64 now = SDL_GetPerformanceCounter();
+	const u64 freq = SDL_GetPerformanceFrequency();
+
+	if (freq == 0)
+	{
+		return 0;
+	}
+	if (s_rootCounterEpoch == 0)
+	{
+		s_rootCounterEpoch = now;
+	}
+
+	return ((now - s_rootCounterEpoch) * CTR_NATIVE_RCNT1_TICKS_PER_SECOND) / freq;
+}
 
 void NativeRCnt_EmitVBlank(void)
 {
-	s_rootCounterValue += CTR_NATIVE_RCNT1_TICKS_PER_VBLANK;
+	// RCNT1 now follows host elapsed time continuously. VBlank remains a
+	// separate 60 Hz service for audio/input callbacks.
 }
 
 int SetRCnt(int spec, unsigned short target, int mode)
@@ -41,7 +61,7 @@ int GetRCnt(int spec)
 
 	(void)spec;
 
-	counts = s_rootCounterValue - s_rootCounterBase;
+	counts = NativeRCnt_CurrentTicks() - s_rootCounterBase;
 	if (counts > 0x7fffffff)
 	{
 		return 0x7fffffff;
@@ -58,6 +78,7 @@ int StartRCnt(int spec)
 		return 0;
 	}
 
+	s_rootCounterBase = NativeRCnt_CurrentTicks();
 	return 1;
 }
 
@@ -71,7 +92,7 @@ int ResetRCnt(int spec)
 {
 	(void)spec;
 
-	s_rootCounterBase = s_rootCounterValue;
+	s_rootCounterBase = NativeRCnt_CurrentTicks();
 	return 0;
 }
 

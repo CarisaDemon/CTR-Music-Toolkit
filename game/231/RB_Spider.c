@@ -149,6 +149,9 @@ s16 spiderArr[] = {
 
 void RB_Spider_ThTick(struct Thread *t)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0)) return;
+#endif
 	u8 prevKartState;
 	struct GameTracker *gGT;
 	struct Instance *hitInst;

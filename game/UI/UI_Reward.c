@@ -67,7 +67,13 @@ void UI_ThTick_CountPickup(struct Thread *bucket)
 		                       : ((s16)sdata->wumpaShineResult - UI_REWARD_WUMPA_SHINE_CENTER) << UI_REWARD_WUMPA_SHINE_SHIFT;
 	}
 
-	obj->rot.y += isTimeCrate ? UI_REWARD_PICKUP_ROT_SLOW : UI_REWARD_PICKUP_ROT_FAST;
+	{
+		int rotTicks = 1;
+#if defined(CTR_NATIVE)
+		rotTicks = Platform_GetLegacy30HzTicks();
+#endif
+		obj->rot.y += (isTimeCrate ? UI_REWARD_PICKUP_ROT_SLOW : UI_REWARD_PICKUP_ROT_FAST) * rotTicks;
+	}
 
 	MATRIX *mat = &inst->matrix;
 
@@ -93,7 +99,13 @@ void UI_ThTick_Reward(struct Thread *bucket)
 	struct Instance *inst = bucket->inst;
 	struct UiElement3D *obj = bucket->object;
 
-	obj->rot.y += UI_REWARD_PICKUP_ROT_SLOW;
+	{
+		int rotTicks = 1;
+#if defined(CTR_NATIVE)
+		rotTicks = Platform_GetLegacy30HzTicks();
+#endif
+		obj->rot.y += UI_REWARD_PICKUP_ROT_SLOW * rotTicks;
+	}
 
 	Vector_SpecLightSpin2D(inst, &obj->rot, &obj->lightDir);
 
@@ -121,7 +133,13 @@ void UI_ThTick_CtrLetters(struct Thread *bucket)
 	struct Instance *inst = bucket->inst;
 	struct UiElement3D *obj = bucket->object;
 
-	obj->rot.y += UI_REWARD_PICKUP_ROT_SLOW;
+	{
+		int rotTicks = 1;
+#if defined(CTR_NATIVE)
+		rotTicks = Platform_GetLegacy30HzTicks();
+#endif
+		obj->rot.y += UI_REWARD_PICKUP_ROT_SLOW * rotTicks;
+	}
 
 	Vector_SpecLightSpin2D(inst, &obj->rot, &obj->lightDir);
 

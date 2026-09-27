@@ -1,5 +1,46 @@
 #include <common.h>
 
+#ifdef CTR_NATIVE
+#include "platform/native_log.h"
+static int s_titleOptionsOpen;
+static s16 s_titleOptionsReturnRow;
+static u32 s_titleOptionsSavedState;
+static struct RectMenu *s_titleOptionsOwner; // CTR_OPTIONS_V43
+static int s_titleOptionsNeedsCursorReset;
+static int s_titleVoicePreviewSound;
+static int s_titleVoicePreviewDelay;
+
+static void MainFreeze_TitleOptionsStopVoicePreview(void)
+{
+	if (s_titleVoicePreviewSound)
+	{
+		OtherFX_Stop1(s_titleVoicePreviewSound);
+		s_titleVoicePreviewSound = 0;
+	}
+	s_titleVoicePreviewDelay = 0;
+}
+
+void MainFreeze_OpenTitleOptions(struct RectMenu *menu)
+{
+	s_titleOptionsReturnRow = menu->rowSelected;
+	s_titleOptionsSavedState = menu->state;
+	s_titleOptionsOwner = menu;
+	s_titleOptionsOpen = 1;
+	// The main-menu input handler writes rowSelected again after this callback.
+	// Reset the Options cursor at the start of the following update instead.
+	s_titleOptionsNeedsCursorReset = 1;
+	MainFreeze_TitleOptionsStopVoicePreview();
+	OptionsMenu_TestSound(0, 0);
+	menu->state |= ONLY_DRAW_TITLE | INVISIBLE;
+	sdata->gGT->demoCountdownTimer = TITLE_DEMO_IDLE_FRAMES;
+	RECTMENU_ClearInput();
+}
+
+int MainFreeze_TitleOptionsIsOpen(void)
+{
+	return s_titleOptionsOpen;
+}
+#endif
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800379f4-0x80037bc0.
 void MainFreeze_ConfigDrawNPC105(s16 startX, s16 startY, s16 radius, int angleStep, s16 angle, char *color, uint32_t *otMem, struct PrimMem *primMem)
@@ -357,6 +398,16 @@ void MainFreeze_ConfigSetupEntry(void)
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x80038b5c-0x80039908.
 
+#ifdef CTR_NATIVE
+enum
+{
+	MAINFREEZE_NATIVE_ROW_SCREEN = 8,
+	MAINFREEZE_NATIVE_ROW_HIGH_REFRESH = 9,
+	MAINFREEZE_NATIVE_ROW_SUBPIXEL = 10,
+	MAINFREEZE_NATIVE_ROW_EXIT = 11,
+};
+#endif
+
 typedef struct
 {
 	int numGamepads;
@@ -430,25 +481,47 @@ force_inline b32 PROCESSINPUTS_MainFreeze_MenuPtrOptions(struct RectMenu *menu, 
 
 	if (sdata->AnyPlayerTap & (BTN_UP | BTN_DOWN))
 	{
+#ifdef CTR_NATIVE
+		if (s_titleOptionsOpen)
+		{
+			MainFreeze_TitleOptionsStopVoicePreview();
+		}
+#endif
 		// play sound for when you're moving around in the menu
 		OtherFX_Play(0, 1);
 
-		// there are only 9 rows total
+		// Native appends four PC-specific rows after the controller rows.
+		// Skip controller rows that do not exist for the current player count.
+		int lastControllerRow = gGT->numPlyrCurrGame + 3;
 		if (sdata->AnyPlayerTap & BTN_UP)
 		{
-			menu->rowSelected = (menu->rowSelected + (9 - 1)) % 9;
-			if (menu->rowSelected == 7)
-			{
-				menu->rowSelected = gGT->numPlyrCurrGame + 3;
-			}
+			if (menu->rowSelected == 0)
+				menu->rowSelected = MAINFREEZE_NATIVE_ROW_EXIT;
+			else if (menu->rowSelected == MAINFREEZE_NATIVE_ROW_EXIT)
+				menu->rowSelected = MAINFREEZE_NATIVE_ROW_SUBPIXEL;
+			else if (menu->rowSelected == MAINFREEZE_NATIVE_ROW_SUBPIXEL)
+				menu->rowSelected = MAINFREEZE_NATIVE_ROW_HIGH_REFRESH;
+			else if (menu->rowSelected == MAINFREEZE_NATIVE_ROW_HIGH_REFRESH)
+				menu->rowSelected = MAINFREEZE_NATIVE_ROW_SCREEN;
+			else if (menu->rowSelected == MAINFREEZE_NATIVE_ROW_SCREEN)
+				menu->rowSelected = lastControllerRow;
+			else
+				menu->rowSelected--;
 		}
 		else if (sdata->AnyPlayerTap & BTN_DOWN)
 		{
-			menu->rowSelected = (menu->rowSelected + 1) % 9;
-			if (menu->rowSelected > (gGT->numPlyrCurrGame + 3))
-			{
-				menu->rowSelected = 8;
-			}
+			if (menu->rowSelected == lastControllerRow)
+				menu->rowSelected = MAINFREEZE_NATIVE_ROW_SCREEN;
+			else if (menu->rowSelected == MAINFREEZE_NATIVE_ROW_SCREEN)
+				menu->rowSelected = MAINFREEZE_NATIVE_ROW_HIGH_REFRESH;
+			else if (menu->rowSelected == MAINFREEZE_NATIVE_ROW_HIGH_REFRESH)
+				menu->rowSelected = MAINFREEZE_NATIVE_ROW_SUBPIXEL;
+			else if (menu->rowSelected == MAINFREEZE_NATIVE_ROW_SUBPIXEL)
+				menu->rowSelected = MAINFREEZE_NATIVE_ROW_EXIT;
+			else if (menu->rowSelected == MAINFREEZE_NATIVE_ROW_EXIT)
+				menu->rowSelected = 0;
+			else
+				menu->rowSelected++;
 		}
 	}
 	else
@@ -461,18 +534,52 @@ force_inline b32 PROCESSINPUTS_MainFreeze_MenuPtrOptions(struct RectMenu *menu, 
 		case 0:
 		case 1:
 		case 2:
+#ifdef CTR_NATIVE
+			if (!s_titleOptionsOpen)
+#endif
 			OptionsMenu_TestSound(menu->rowSelected, 1);
-			if (sdata->AnyPlayerHold & (BTN_LEFT | BTN_RIGHT))
+			int oldVolume = howl_VolumeGet(menu->rowSelected) & 0xff;
+			int sliderStep = 4;
+#ifdef CTR_NATIVE
+			static int s_nativeSliderAccum[3] = {0, 0, 0};
+			if (Platform_GetHighRefreshMode())
 			{
-				int volume = howl_VolumeGet(menu->rowSelected);
+				int targetFPS = Platform_GetHighRefreshTargetFPS();
+				if (targetFPS < 30) targetFPS = 30;
+
+				if (sdata->AnyPlayerHold & (BTN_LEFT | BTN_RIGHT))
+				{
+					// Keep continuous slider speed equal to retail while polling
+					// input every host frame. Do not require the button hold to
+					// coincide with a discrete 30 Hz content tick.
+					s_nativeSliderAccum[menu->rowSelected] += 30;
+					sliderStep = 4 * (s_nativeSliderAccum[menu->rowSelected] / targetFPS);
+					s_nativeSliderAccum[menu->rowSelected] %= targetFPS;
+
+					// A fresh tap must always feel immediate.
+					if ((sliderStep == 0) && (sdata->AnyPlayerTap & (BTN_LEFT | BTN_RIGHT)))
+					{
+						sliderStep = 4;
+					}
+				}
+				else
+				{
+					s_nativeSliderAccum[menu->rowSelected] = 0;
+					sliderStep = 0;
+				}
+			}
+#endif
+			if ((sliderStep > 0) && (sdata->AnyPlayerHold & (BTN_LEFT | BTN_RIGHT)))
+			{
+				int volume = oldVolume;
 
 				if (sdata->AnyPlayerHold & BTN_LEFT)
 				{
-					volume -= 4;
+					volume -= sliderStep;
 				}
 				else if (sdata->AnyPlayerHold & BTN_RIGHT)
 				{
-					volume += 4;
+					volume += sliderStep;
 				}
 
 				if (volume < 0)
@@ -485,6 +592,28 @@ force_inline b32 PROCESSINPUTS_MainFreeze_MenuPtrOptions(struct RectMenu *menu, 
 				}
 
 				howl_VolumeSet(menu->rowSelected, volume);
+#ifdef CTR_NATIVE
+				if (s_titleOptionsOpen && volume != oldVolume)
+				{
+					if (menu->rowSelected == HOWL_VOLUME_TYPE_FX)
+					{
+						OtherFX_Play(0, 1);
+					}
+					else if (menu->rowSelected == HOWL_VOLUME_TYPE_VOICE)
+					{
+						if (s_titleVoicePreviewDelay == 0 || (sdata->AnyPlayerTap & (BTN_LEFT | BTN_RIGHT)))
+						{
+							MainFreeze_TitleOptionsStopVoicePreview();
+							s_titleVoicePreviewSound = OtherFX_Play(0x1c + CRASH_BANDICOOT, 0);
+							s_titleVoicePreviewDelay = 12;
+						}
+						else
+						{
+							s_titleVoicePreviewDelay--;
+						}
+					}
+				}
+#endif
 			}
 			break;
 
@@ -532,11 +661,47 @@ force_inline b32 PROCESSINPUTS_MainFreeze_MenuPtrOptions(struct RectMenu *menu, 
 			}
 			break;
 
-		// Exit
-		case 8:
-			// clear test sound
+		// Native PC display options.
+		case MAINFREEZE_NATIVE_ROW_SCREEN:
+#ifdef CTR_NATIVE
 			OptionsMenu_TestSound(0, 0);
-
+			if (sdata->AnyPlayerTap & (BTN_LEFT | BTN_RIGHT | BTN_CIRCLE | BTN_CROSS_one))
+			{
+				OtherFX_Play(1, 1);
+				Platform_SetWideMode(!Platform_GetWideMode());
+			}
+#endif
+			break;
+		case MAINFREEZE_NATIVE_ROW_HIGH_REFRESH:
+#ifdef CTR_NATIVE
+			OptionsMenu_TestSound(0, 0);
+			if (sdata->AnyPlayerTap & (BTN_LEFT | BTN_RIGHT | BTN_CIRCLE | BTN_CROSS_one))
+			{
+				const int oldMode = Platform_GetHighRefreshMode();
+				const int newMode = !oldMode;
+				Platform_Log("[CTR Native] V70 MENU HIGH REFRESH row=%d tap=%08x old=%d new=%d\n",
+				             menu->rowSelected, (unsigned)sdata->AnyPlayerTap, oldMode, newMode);
+				OtherFX_Play(1, 1);
+				Platform_SetHighRefreshMode(newMode);
+			}
+#endif
+			break;
+		case MAINFREEZE_NATIVE_ROW_SUBPIXEL:
+#ifdef CTR_NATIVE
+			OptionsMenu_TestSound(0, 0);
+			if (sdata->AnyPlayerTap & (BTN_LEFT | BTN_RIGHT | BTN_CIRCLE | BTN_CROSS_one))
+			{
+				const int oldMode = Platform_GetSubpixelMode();
+				const int newMode = !oldMode;
+				Platform_Log("[CTR Native] V70 MENU SUBPIXEL row=%d tap=%08x old=%d new=%d\n",
+				             menu->rowSelected, (unsigned)sdata->AnyPlayerTap, oldMode, newMode);
+				OtherFX_Play(1, 1);
+				Platform_SetSubpixelMode(newMode);
+			}
+#endif
+			break;
+		case MAINFREEZE_NATIVE_ROW_EXIT:
+			OptionsMenu_TestSound(0, 0);
 			if (sdata->AnyPlayerTap & (BTN_CIRCLE | BTN_CROSS_one))
 			{
 				OtherFX_Play(1, 1);
@@ -733,12 +898,41 @@ force_inline void DISPLAYRECTMENU_MainFreeze_MenuPtrOptions(struct RectMenu *men
 		}
 	}
 
-	DecalFont_DrawLine(sdata->lngStrings[LNG_OPTIONS_EXIT], 76, 140 - (menuRowsNegativePadding / 2), FONT_SMALL, ORANGE);
+#ifdef CTR_NATIVE
+	const int nativeOptionsY = 140 - (menuRowsNegativePadding / 2);
+	DecalFont_DrawLine("SCREEN", 76, nativeOptionsY, FONT_SMALL, ORANGE);
+	DecalFont_DrawLine(Platform_GetWideMode() ? "16:9" : "4:3", 436, nativeOptionsY, FONT_SMALL, JUSTIFY_RIGHT | WHITE);
 
+	DecalFont_DrawLine("HIGH REFRESH", 76, nativeOptionsY + 10, FONT_SMALL, ORANGE);
+	{
+		char refreshText[24];
+		if (Platform_GetHighRefreshMode())
+			snprintf(refreshText, sizeof(refreshText), "%d FPS", Platform_GetHighRefreshTargetFPS());
+		else
+			snprintf(refreshText, sizeof(refreshText), "OFF");
+		DecalFont_DrawLine(refreshText, 436, nativeOptionsY + 10, FONT_SMALL, JUSTIFY_RIGHT | WHITE);
+	}
+
+	DecalFont_DrawLine("SUBPIXEL", 76, nativeOptionsY + 20, FONT_SMALL, ORANGE);
+	DecalFont_DrawLine(Platform_GetSubpixelMode() ? "ON" : "OFF", 436, nativeOptionsY + 20, FONT_SMALL, JUSTIFY_RIGHT | WHITE);
+
+	DecalFont_DrawLine(sdata->lngStrings[LNG_OPTIONS_EXIT], 76, nativeOptionsY + 30, FONT_SMALL, ORANGE);
+#endif
+
+	// Native PC rows reuse the final retail highlight style and extend it down.
+	int highlightRow = menu->rowSelected;
+	int nativeHighlightOffset = 0;
+#ifdef CTR_NATIVE
+	if (menu->rowSelected >= MAINFREEZE_NATIVE_ROW_SCREEN)
+	{
+		highlightRow = MAINFREEZE_NATIVE_ROW_SCREEN;
+		nativeHighlightOffset = (menu->rowSelected - MAINFREEZE_NATIVE_ROW_SCREEN) * 10;
+	}
+#endif
 	RECT cursor = {.x = 74,
-	               .y = data.Options_HighlightBar[menu->rowSelected].posY + (menuRowsNegativePadding / 2) + 20,
+	               .y = data.Options_HighlightBar[highlightRow].posY + nativeHighlightOffset + (menuRowsNegativePadding / 2) + 20,
 	               .w = 364,
-	               .h = data.Options_HighlightBar[menu->rowSelected].sizeY};
+	               .h = data.Options_HighlightBar[highlightRow].sizeY};
 
 	CTR_Box_DrawClearBox(&cursor, &sdata->menuRowHighlight_Normal, TRANS_50_DECAL, ot);
 
@@ -747,13 +941,25 @@ force_inline void DISPLAYRECTMENU_MainFreeze_MenuPtrOptions(struct RectMenu *men
 	color.self = sdata->battleSetup_Color_UI_1;
 	RECTMENU_DrawOuterRect_Edge(&titleSeparatorLine, color, 0x20, ot);
 
-	RECT menuBG = {.x = 56, .y = (menuRowsNegativePadding / 2) + 20, .w = 400, .h = 135 - menuRowsNegativePadding};
+	RECT menuBG = {.x = 56, .y = (menuRowsNegativePadding / 2) + 20, .w = 400, .h = 165 - menuRowsNegativePadding};
 
+#ifdef CTR_NATIVE
+	// Hide the title logo behind this translucent pause-menu panel.
 	RECTMENU_DrawInnerRect(&menuBG, 4, ot);
+#else
+	RECTMENU_DrawInnerRect(&menuBG, 4, ot);
+#endif
 }
 
 void MainFreeze_MenuPtrOptions(struct RectMenu *menu)
 {
+#ifdef CTR_NATIVE
+	if (s_titleOptionsOpen && s_titleOptionsNeedsCursorReset)
+	{
+		menu->rowSelected = 0;
+		s_titleOptionsNeedsCursorReset = 0;
+	}
+#endif
 	MainFreeze_SafeAdvDestroy();
 
 	// open racing wheel config menu instead
@@ -778,15 +984,28 @@ void MainFreeze_MenuPtrOptions(struct RectMenu *menu)
 
 	IDENTIFYGAMEPADS_MainFreeze_MenuPtrOptions(menu, &gamepad);
 	b32 exitMenu = PROCESSINPUTS_MainFreeze_MenuPtrOptions(menu, &gamepad);
-	DISPLAYRECTMENU_MainFreeze_MenuPtrOptions(menu, &gamepad);
-
 	if (exitMenu || (sdata->AnyPlayerTap & (BTN_TRIANGLE | BTN_START | BTN_SQUARE_one)))
 	{
 		OtherFX_Play(1, 1);
 		OptionsMenu_TestSound(0, 0);
 		RECTMENU_ClearInput();
+#ifdef CTR_NATIVE
+		if (s_titleOptionsOpen)
+		{
+			MainFreeze_TitleOptionsStopVoicePreview();
+			s_titleOptionsOpen = 0;
+			if (s_titleOptionsOwner != NULL)
+			{
+				s_titleOptionsOwner->rowSelected = s_titleOptionsReturnRow;
+				s_titleOptionsOwner->state = s_titleOptionsSavedState;
+				s_titleOptionsOwner = NULL;
+			}
+			return;
+		}
+#endif
 		sdata->ptrDesiredMenu = MainFreeze_GetMenuPtr();
 	}
+	DISPLAYRECTMENU_MainFreeze_MenuPtrOptions(menu, &gamepad);
 }
 
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x80039908-0x800399fc.
@@ -916,7 +1135,7 @@ void MainFreeze_MenuPtrDefault(struct RectMenu *menu)
 		// Set Menu to Options
 		sdata->ptrDesiredMenu = &data.menuRacingWheelConfig;
 
-		data.menuRacingWheelConfig.rowSelected = 8;
+		data.menuRacingWheelConfig.rowSelected = MAINFREEZE_NATIVE_ROW_EXIT;
 		return;
 	}
 

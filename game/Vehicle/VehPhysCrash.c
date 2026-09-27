@@ -80,12 +80,48 @@ static s32 VehPhysCrash_Dot3(s32 ax, s32 ay, s32 az, s32 bx, s32 by, s32 bz)
 	return CTR_MipsAddLo(CTR_MipsAddLo(CTR_MipsMulLo(ax, bx), CTR_MipsMulLo(ay, by)), CTR_MipsMulLo(az, bz));
 }
 
+#if defined(CTR_NATIVE)
+static s16 VehPhysCrash_QuantizeSpeedHighRefresh(struct Driver *d, int channel, u32 rawSpeed)
+{
+	static u16 residual[8][2];
+	const int driverID = (int)d->driverID;
+	int whole = (int)(rawSpeed >> VEH_PHYS_CRASH_VECTOR_SPEED_SHIFT);
+
+	if (!Platform_GetHighRefreshMode() || driverID < 0 || driverID >= 8 || channel < 0 || channel >= 2)
+	{
+		return (s16)whole;
+	}
+
+	// Do not let sub-unit collision/normal noise accumulate into an occasional
+	// one-unit speed pulse while the kart is physically at rest. That pulse is
+	// visible at high refresh as the periodic idle "tick" reported by the user.
+	if (rawSpeed < (1u << VEH_PHYS_CRASH_VECTOR_SPEED_SHIFT))
+	{
+		residual[driverID][channel] = 0;
+		return 0;
+	}
+
+	// At 30 Hz the 24.8 -> integer speed truncation happens 30 times/sec.
+	// At 200 Hz it happens after every tiny acceleration step, repeatedly
+	// discarding the low 8 bits before the next velocity reconstruction.
+	// Error-diffuse those bits so average speed is independent of update rate.
+	u32 accum = (u32)residual[driverID][channel] + (rawSpeed & 0xffu);
+	whole += (int)(accum >> 8);
+	residual[driverID][channel] = (u16)(accum & 0xffu);
+	return (s16)whole;
+}
+#endif
+
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8005cd1c-0x8005cf64.
 void VehPhysCrash_ConvertVecToSpeed(struct Driver *d, Vec3 *vel)
 {
 	int speed2D = VehCalc_FastSqrt(VehPhysCrash_LengthSq2(vel->x, vel->z), VEH_PHYS_CRASH_FAST_SQRT_ITERATIONS);
-	s16 speed3D =
-	    (s16)(VehCalc_FastSqrt(VehPhysCrash_LengthSq3(vel->x, vel->y, vel->z), VEH_PHYS_CRASH_FAST_SQRT_ITERATIONS) >> VEH_PHYS_CRASH_VECTOR_SPEED_SHIFT);
+	u32 rawSpeed3D = VehCalc_FastSqrt(VehPhysCrash_LengthSq3(vel->x, vel->y, vel->z), VEH_PHYS_CRASH_FAST_SQRT_ITERATIONS);
+#if defined(CTR_NATIVE)
+	s16 speed3D = VehPhysCrash_QuantizeSpeedHighRefresh(d, 0, rawSpeed3D);
+#else
+	s16 speed3D = (s16)(rawSpeed3D >> VEH_PHYS_CRASH_VECTOR_SPEED_SHIFT);
+#endif
 
 	d->speed = speed3D;
 	d->axisRotationY = (s16)ratan2(CTR_MipsSll(vel->y, VEH_PHYS_CRASH_VECTOR_SPEED_SHIFT), speed2D);
@@ -111,7 +147,14 @@ void VehPhysCrash_ConvertVecToSpeed(struct Driver *d, Vec3 *vel)
 	projY = CTR_MipsSubLo(vel->y, projY);
 	projZ = CTR_MipsSubLo(vel->z, projZ);
 
-	speed3D = (s16)(VehCalc_FastSqrt(VehPhysCrash_LengthSq3(projX, projY, projZ), VEH_PHYS_CRASH_FAST_SQRT_ITERATIONS) >> VEH_PHYS_CRASH_VECTOR_SPEED_SHIFT);
+	{
+		u32 rawApproxSpeed = VehCalc_FastSqrt(VehPhysCrash_LengthSq3(projX, projY, projZ), VEH_PHYS_CRASH_FAST_SQRT_ITERATIONS);
+#if defined(CTR_NATIVE)
+		speed3D = VehPhysCrash_QuantizeSpeedHighRefresh(d, 1, rawApproxSpeed);
+#else
+		speed3D = (s16)(rawApproxSpeed >> VEH_PHYS_CRASH_VECTOR_SPEED_SHIFT);
+#endif
+	}
 
 	d->speedApprox = speed3D;
 

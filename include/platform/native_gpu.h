@@ -16,6 +16,12 @@ extern DRAWENV activeDrawEnv;
 extern int g_GPUDisabledState;
 
 int NativeGpu_HasPendingSplits(void);
+void NativeGpu_PresentationBeginFrame(void);
+void NativeGpu_PresentationEndFrame(void);
+void NativeGpu_PresentationReset(void);
+int NativeGpu_PresentationDrawInterpolated(float alpha);
+void NativeGpu_ResetSubpixelStats(void);
+void NativeGpu_LogSubpixelStats(void);
 void ClearSplits(void);
 void DrawAllSplits(void);
 void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive);

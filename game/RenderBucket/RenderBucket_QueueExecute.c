@@ -1232,6 +1232,26 @@ static void RenderBucket_StoreMvpTranslation(struct InstDrawPerPlayer *idpp, con
 	CTC2(viewPos->vz, 7);
 }
 
+#if defined(CTR_NATIVE)
+static int RenderBucket_NativeRangeInMempack(const void *ptr, size_t bytes)
+{
+	const struct PlatformMempackArena *arena = Platform_GetMempackArena();
+	const u8 *p = (const u8 *)ptr;
+	const u8 *base;
+	const u8 *end;
+
+	if ((arena == NULL) || (arena->base == NULL) || (arena->endOfMemory == NULL) || (ptr == NULL))
+		return 0;
+
+	base = (const u8 *)arena->base;
+	end = (const u8 *)arena->endOfMemory;
+	if ((p < base) || (p > end))
+		return 0;
+
+	return bytes <= (size_t)(end - p);
+}
+#endif
+
 static struct ModelHeader *RenderBucket_SelectModelHeader(struct Instance *inst, struct PushBuffer *pb, int *lodIndexOut, int *lodExhaustedOut, int viewDepth)
 {
 	struct ModelHeader *mh;
@@ -1243,10 +1263,29 @@ static struct ModelHeader *RenderBucket_SelectModelHeader(struct Instance *inst,
 	*lodExhaustedOut = 0;
 
 #ifdef CTR_NATIVE
-	// NOTE(aalhendi): Retail trusts ModelHeader count and will walk raw model
-	// data; native keeps malformed host-side models from trapping.
-	if (inst->model->numHeaders <= 0)
+	// Native can observe an MPK while its raw bytes are being replaced and before
+	// LOAD_RunPtrMap has rebuilt the internal host pointers. If this instance's
+	// Model lives in the mempack arena, validate both the Model and its complete
+	// header array before touching LOD data. A transient invalid model is simply
+	// skipped for this frame and becomes drawable again after relocation finishes.
+	if ((inst == NULL) || (inst->model == NULL))
 	{
+		return 0;
+	}
+
+	if (RenderBucket_NativeRangeInMempack(inst->model, sizeof(*inst->model)))
+	{
+		const int nativeHeaderCount = inst->model->numHeaders;
+		if ((nativeHeaderCount <= 0) || (nativeHeaderCount > 256) ||
+		    !RenderBucket_NativeRangeInMempack(inst->model->headers, (size_t)nativeHeaderCount * sizeof(*inst->model->headers)))
+		{
+			return 0;
+		}
+	}
+	else if (inst->model->numHeaders <= 0)
+	{
+		// Preserve support for legitimate native/static model storage outside the
+		// mempack while retaining the pre-existing malformed-model guard.
 		return 0;
 	}
 #endif
@@ -2630,6 +2669,9 @@ static void RenderBucket_LoadPrimRTPS(struct RenderBucketDrawContext *ctx, int r
 		// sequence at 0x8006a680-0x8006a690: copy SXY0/SZ1 into the RTPS FIFO
 		// before projecting the new vertex.
 		MTC2(sxy0, 13);
+#if defined(CTR_NATIVE)
+		NativeGTE_CopySXYFIFO(0,1);
+#endif
 		MTC2(sz1, 18);
 	}
 
@@ -2641,21 +2683,30 @@ static void RenderBucket_LoadPrimRTPS(struct RenderBucketDrawContext *ctx, int r
 
 static void RenderBucket_StoreProjectedRegs(struct RenderBucketProjectedRegs *regs)
 {
-	regs->sxy0 = MFC2(12);
+	CTR_GteStoreSXY0(&regs->sxy0);
 	regs->sz1 = MFC2(17);
-	regs->sxy1 = MFC2(13);
+	CTR_GteStoreSXY1(&regs->sxy1);
 	regs->sz2 = MFC2(18);
-	regs->sxy2 = MFC2(14);
+	CTR_GteStoreSXY(&regs->sxy2);
 	regs->sz3 = MFC2(19);
 }
 
 static void RenderBucket_LoadProjectedRegs(const struct RenderBucketProjectedRegs *regs)
 {
 	MTC2(regs->sxy0, 12);
+#if defined(CTR_NATIVE)
+	NativeGTE_LoadSXYStore(&regs->sxy0,regs->sxy0,0);
+#endif
 	MTC2(regs->sz1, 17);
 	MTC2(regs->sxy1, 13);
+#if defined(CTR_NATIVE)
+	NativeGTE_LoadSXYStore(&regs->sxy1,regs->sxy1,1);
+#endif
 	MTC2(regs->sz2, 18);
 	MTC2(regs->sxy2, 14);
+#if defined(CTR_NATIVE)
+	NativeGTE_LoadSXYStore(&regs->sxy2,regs->sxy2,2);
+#endif
 	MTC2(regs->sz3, 19);
 }
 
@@ -3281,9 +3332,9 @@ static int RenderBucket_DrawInstPrim_GhostAtRange(struct RenderBucketDrawContext
 	mask->drawMode = 0xe1000a40;
 	mask->pad = 0;
 	mask->colorAndCode = RenderBucket_Scratch()->split.fadeColor.word;
-	mask->xy0 = (u32)MFC2(12);
-	mask->xy1 = (u32)MFC2(13);
-	mask->xy2 = (u32)MFC2(14);
+	CTR_GteStoreSXY0(&mask->xy0);
+	CTR_GteStoreSXY1(&mask->xy1);
+	CTR_GteStoreSXY(&mask->xy2);
 
 	if (tex == 0)
 	{
@@ -3292,11 +3343,11 @@ static int RenderBucket_DrawInstPrim_GhostAtRange(struct RenderBucketDrawContext
 		packet->drawMode = 0xe1000a20;
 		packet->pad = 0;
 		packet->body.color0AndCode = 0x32000000 | (u32)MFC2(20);
-		packet->body.xy0 = (u32)MFC2(12);
+		CTR_GteStoreSXY0(&packet->body.xy0);
 		packet->body.color1 = (u32)MFC2(21);
-		packet->body.xy1 = (u32)MFC2(13);
+		CTR_GteStoreSXY1(&packet->body.xy1);
 		packet->body.color2 = (u32)MFC2(22);
-		packet->body.xy2 = (u32)MFC2(14);
+		CTR_GteStoreSXY(&packet->body.xy2);
 
 		RenderBucket_LinkPrimRaw(otEntry, packet, 0x0e000000);
 		ctx->primMem->cursor = packet + 1;
@@ -3307,13 +3358,13 @@ static int RenderBucket_DrawInstPrim_GhostAtRange(struct RenderBucketDrawContext
 		u32 texWord1 = (RenderBucket_ReadTextureWord(tex, RENDER_BUCKET_TEX_WORD1_OFFSET) & ~0x00600000U) | 0x00200000U;
 
 		packet->body.color0AndCode = 0x36000000 | (u32)MFC2(20);
-		packet->body.xy0 = (u32)MFC2(12);
+		CTR_GteStoreSXY0(&packet->body.xy0);
 		packet->body.uv0 = RenderBucket_ReadTextureWord(tex, RENDER_BUCKET_TEX_WORD0_OFFSET);
 		packet->body.color1 = (u32)MFC2(21);
-		packet->body.xy1 = (u32)MFC2(13);
+		CTR_GteStoreSXY1(&packet->body.xy1);
 		packet->body.uv1 = texWord1;
 		packet->body.color2 = (u32)MFC2(22);
-		packet->body.xy2 = (u32)MFC2(14);
+		CTR_GteStoreSXY(&packet->body.xy2);
 		packet->body.uv2 = RenderBucket_ReadTextureWord(tex, RENDER_BUCKET_TEX_WORD2_OFFSET);
 
 		RenderBucket_LinkPrimRaw(otEntry, packet, 0x0f000000);
@@ -3464,10 +3515,19 @@ static int RenderBucket_DrawSplitPrimitiveNormalAtOTEntry(struct RenderBucketDra
 		CtrGpu_WriteColorCode(&p->r2, (u32)MFC2(22));
 		p->x0 = (s16)v0->sxy;
 		p->y0 = (s16)(v0->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x0,&v0->sxy,v0->sxy);
+#endif
 		p->x1 = (s16)v1->sxy;
 		p->y1 = (s16)(v1->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x1,&v1->sxy,v1->sxy);
+#endif
 		p->x2 = (s16)v2->sxy;
 		p->y2 = (s16)(v2->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x2,&v2->sxy,v2->sxy);
+#endif
 		RenderBucket_LinkPrimRaw(otEntry, p, 0x06000000);
 		ctx->primMem->cursor = (char *)p + 0x1c;
 	}
@@ -3482,16 +3542,25 @@ static int RenderBucket_DrawSplitPrimitiveNormalAtOTEntry(struct RenderBucketDra
 		CtrGpu_WriteColorCode(&p->r2, (u32)MFC2(22));
 		p->x0 = (s16)v0->sxy;
 		p->y0 = (s16)(v0->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x0,&v0->sxy,v0->sxy);
+#endif
 		p->u0 = (u8)v0->uv;
 		p->v0 = (u8)(v0->uv >> 8);
 		p->clut = tex->clut;
 		p->x1 = (s16)v1->sxy;
 		p->y1 = (s16)(v1->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x1,&v1->sxy,v1->sxy);
+#endif
 		p->u1 = (u8)v1->uv;
 		p->v1 = (u8)(v1->uv >> 8);
 		p->tpage = tex->tpage;
 		p->x2 = (s16)v2->sxy;
 		p->y2 = (s16)(v2->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x2,&v2->sxy,v2->sxy);
+#endif
 		p->u2 = (u8)v2->uv;
 		p->v2 = (u8)(v2->uv >> 8);
 		RenderBucket_LinkPrimRaw(otEntry, p, 0x09000000);
@@ -3577,12 +3646,21 @@ static void RenderBucket_WriteSplitFT3(POLY_FT3 *p, const struct RenderBucketSpl
 {
 	p->x0 = (s16)v0->sxy;
 	p->y0 = (s16)(v0->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x0,&v0->sxy,v0->sxy);
+#endif
 	CtrGpu_WritePackedUVWord(&p->u0, texWord0);
 	p->x1 = (s16)v1->sxy;
 	p->y1 = (s16)(v1->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x1,&v1->sxy,v1->sxy);
+#endif
 	CtrGpu_WritePackedUVWord(&p->u1, texWord1);
 	p->x2 = (s16)v2->sxy;
 	p->y2 = (s16)(v2->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x2,&v2->sxy,v2->sxy);
+#endif
 	CtrGpu_WritePackedUVWord(&p->u2, texWord2);
 }
 
@@ -3629,16 +3707,25 @@ static int RenderBucket_DrawSplitPrimitiveDepthFadeAtRange(struct RenderBucketDr
 	CtrGpu_WriteColorCode(&p->r2, color2);
 	p->x0 = (s16)v0->sxy;
 	p->y0 = (s16)(v0->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x0,&v0->sxy,v0->sxy);
+#endif
 	p->u0 = (u8)v0->uv;
 	p->v0 = (u8)(v0->uv >> 8);
 	p->clut = tex->clut;
 	p->x1 = (s16)v1->sxy;
 	p->y1 = (s16)(v1->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x1,&v1->sxy,v1->sxy);
+#endif
 	p->u1 = (u8)v1->uv;
 	p->v1 = (u8)(v1->uv >> 8);
 	p->tpage = tex->tpage;
 	p->x2 = (s16)v2->sxy;
 	p->y2 = (s16)(v2->sxy >> 16);
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&p->x2,&v2->sxy,v2->sxy);
+#endif
 	p->u2 = (u8)v2->uv;
 	p->v2 = (u8)(v2->uv >> 8);
 	RenderBucket_LinkPrimRaw(otEntry, p, 0x09000000);
@@ -3684,8 +3771,17 @@ static int RenderBucket_DrawSplitPrimitiveGhostAtRange(struct RenderBucketDrawCo
 	mask->pad = 0;
 	mask->colorAndCode = RenderBucket_Scratch()->split.fadeColor.word;
 	mask->xy0 = v0->sxy;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&mask->xy0,&v0->sxy,v0->sxy);
+#endif
 	mask->xy1 = v1->sxy;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&mask->xy1,&v1->sxy,v1->sxy);
+#endif
 	mask->xy2 = v2->sxy;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&mask->xy2,&v2->sxy,v2->sxy);
+#endif
 
 	if (tex == 0)
 	{
@@ -3695,10 +3791,19 @@ static int RenderBucket_DrawSplitPrimitiveGhostAtRange(struct RenderBucketDrawCo
 		packet->pad = 0;
 		packet->body.color0AndCode = 0x32000000 | (u32)MFC2(20);
 		packet->body.xy0 = v0->sxy;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&packet->body.xy0,&v0->sxy,v0->sxy);
+#endif
 		packet->body.color1 = (u32)MFC2(21);
 		packet->body.xy1 = v1->sxy;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&packet->body.xy1,&v1->sxy,v1->sxy);
+#endif
 		packet->body.color2 = (u32)MFC2(22);
 		packet->body.xy2 = v2->sxy;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&packet->body.xy2,&v2->sxy,v2->sxy);
+#endif
 
 		RenderBucket_LinkPrimRaw(otEntry, packet, 0x0e000000);
 		ctx->primMem->cursor = packet + 1;
@@ -3713,12 +3818,21 @@ static int RenderBucket_DrawSplitPrimitiveGhostAtRange(struct RenderBucketDrawCo
 
 		packet->body.color0AndCode = 0x36000000 | (u32)MFC2(20);
 		packet->body.xy0 = v0->sxy;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&packet->body.xy0,&v0->sxy,v0->sxy);
+#endif
 		packet->body.uv0 = texWord0;
 		packet->body.color1 = (u32)MFC2(21);
 		packet->body.xy1 = v1->sxy;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&packet->body.xy1,&v1->sxy,v1->sxy);
+#endif
 		packet->body.uv1 = texWord1;
 		packet->body.color2 = (u32)MFC2(22);
 		packet->body.xy2 = v2->sxy;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&packet->body.xy2,&v2->sxy,v2->sxy);
+#endif
 		packet->body.uv2 = texWord2;
 
 		RenderBucket_LinkPrimRaw(otEntry, packet, 0x0f000000);
@@ -3911,7 +4025,7 @@ static void RenderBucket_ProjectSplitVertex(struct RenderBucketDrawContext *ctx,
 	MTC2(v->xy, 0);
 	MTC2(v->z, 1);
 	gte_rtps();
-	v->sxy = MFC2(14);
+	CTR_GteStoreSXY(&v->sxy);
 	v->sz = MFC2(19);
 }
 

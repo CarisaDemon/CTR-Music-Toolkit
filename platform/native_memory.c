@@ -13,7 +13,7 @@
 #include <string.h>
 
 #ifndef CTR_NATIVE_MEMPACK_RETAIL_PRESSURE
-#define CTR_NATIVE_MEMPACK_RETAIL_PRESSURE 1
+#define CTR_NATIVE_MEMPACK_RETAIL_PRESSURE 0
 #endif
 
 // TODO(aalhendi): Re-audit LOAD_ReadFile_ex, LOAD_DramFileCallback, LEV/PTR

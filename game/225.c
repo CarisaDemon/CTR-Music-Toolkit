@@ -85,7 +85,11 @@ void VB_EndEvent_DrawMenu(void)
 
 	if (sdata->framesSinceRaceEnded < VB_RESULT_MAX_FRAMES)
 	{
+#if defined(CTR_NATIVE)
+		sdata->framesSinceRaceEnded += Platform_GetLegacy30HzTicks();
+#else
 		sdata->framesSinceRaceEnded++;
+#endif
 	}
 
 	s32 titleString = LNG_BATTLE;

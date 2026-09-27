@@ -30,6 +30,18 @@ extern int CFC2_S(int reg);
 /* performs cop2 opcode */
 extern int doCOP2(int op);
 
+#if defined(CTR_NATIVE)
+extern void NativeGTE_RecordSXYStore(void *address, int fifoIndex);
+extern void NativeGTE_CopySXYStore(void *dst, const void *src, unsigned int packed);
+extern void NativeGTE_LoadSXYStore(const void *src, unsigned int packed, int index);
+extern void NativeGTE_WriteSXYRegister(unsigned int packed, int reg);
+extern void NativeGTE_CopySXYFIFO(int src, int dst);
+
+#define CTR_NATIVE_RECORD_SXY(address, fifoIndex) NativeGTE_RecordSXYStore((void *)(address), (fifoIndex))
+#else
+#define CTR_NATIVE_RECORD_SXY(address, fifoIndex) ((void)0)
+#endif
+
 
 /*
  * Type 1 functions
@@ -615,6 +627,7 @@ extern int doCOP2(int op);
 #define gte_stsxy(r0)                           \
 	{                                           \
 		CTR_WriteU32LE((char *)(r0), MFC2(14)); \
+		CTR_NATIVE_RECORD_SXY((r0), 2);         \
 	}
 
 // mfc2 12-14
@@ -623,6 +636,9 @@ extern int doCOP2(int op);
 		CTR_WriteU32LE((char *)(r0), MFC2(12)); \
 		CTR_WriteU32LE((char *)(r1), MFC2(13)); \
 		CTR_WriteU32LE((char *)(r2), MFC2(14)); \
+		CTR_NATIVE_RECORD_SXY((r0), 0);         \
+		CTR_NATIVE_RECORD_SXY((r1), 1);         \
+		CTR_NATIVE_RECORD_SXY((r2), 2);         \
 	}
 
 // swc2 14
@@ -632,12 +648,14 @@ extern int doCOP2(int op);
 #define gte_stsxy1(r0)                          \
 	{                                           \
 		CTR_WriteU32LE((char *)(r0), MFC2(13)); \
+		CTR_NATIVE_RECORD_SXY((r0), 1);         \
 	}
 
 // swc2 12
 #define gte_stsxy0(r0)                          \
 	{                                           \
 		CTR_WriteU32LE((char *)(r0), MFC2(12)); \
+		CTR_NATIVE_RECORD_SXY((r0), 0);         \
 	}
 
 // swc2 8

@@ -107,6 +107,10 @@ void MM_Video_KickCD(CdlLOC *location)
 void MM_Video_VLC_Decode(void)
 {
 	s16 oldDecodeState;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 	int backloc;
 	int result;
 	uint32_t size;
@@ -127,7 +131,7 @@ void MM_Video_VLC_Decode(void)
 	oldDecodeState = V230.decodeState;
 	if ((V230.decodeState == 1) && ((V230.ringSectorCount - (V230.ringSectorCount >> 2)) <= freeSectors))
 	{
-		V230.stallRecoveryFrames++;
+		V230.stallRecoveryFrames += legacyTicks;
 
 		if (MM_VIDEO_STALL_RECOVERY_FRAMES < V230.stallRecoveryFrames)
 		{
@@ -162,7 +166,7 @@ void MM_Video_VLC_Decode(void)
 
 	if (backloc == V230.lastBackloc)
 	{
-		V230.stalledBacklocFrames++;
+		V230.stalledBacklocFrames += legacyTicks;
 		if (MM_VIDEO_STALLED_BACKLOC_FRAMES < V230.stalledBacklocFrames)
 		{
 			V230.stalledBacklocFrames = 0;

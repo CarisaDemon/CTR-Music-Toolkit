@@ -25,6 +25,10 @@ static void RB_Baron_SetPathFrame(struct Instance *inst, struct SpawnType2 *spaw
 
 void RB_Baron_ThTick(struct Thread *t)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+		return;
+#endif
 	struct Instance *baronInst;
 	struct Baron *baronObj;
 	struct Level *level;

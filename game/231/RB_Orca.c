@@ -98,6 +98,10 @@ static void RB_Orca_SpawnSplash(struct Instance *orcaInst)
 
 void RB_Orca_ThTick(struct Thread *t)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+		return;
+#endif
 	struct Orca *orcaObj;
 	struct Instance *orcaInst;
 	struct GameTracker *gGT;

@@ -20,6 +20,13 @@ void AH_SaveObj_ThTick(struct Thread *t)
 	struct Driver *driver = gGT->drivers[0];
 	struct Instance *saveInst = t->inst;
 	struct Instance *driverInst = driver->instSelf;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode())
+	{
+		legacyTicks = Platform_GetLegacy30HzTicks();
+	}
+#endif
 
 	// Get difference in positions between instances
 	int distX = saveInst->matrix.t[0] - driverInst->matrix.t[0];
@@ -53,10 +60,26 @@ void AH_SaveObj_ThTick(struct Thread *t)
 
 		// Check if Aku Aku is giving a hint:
 		// 0 - speaking, 1 - gone.
-		if ((driver->speed < AH_SAVEOBJ_ENTRY_SPEED_MAX) && AH_MaskHint_boolCanSpawn())
+		if ((((driver->speed < AH_SAVEOBJ_ENTRY_SPEED_MAX)
+#if defined(CTR_NATIVE)
+		      && (!Platform_GetHighRefreshMode() ||
+		          ((driver->speed == 0) && (driver->speedApprox == 0) &&
+		           (driver->baseSpeed > -0x20) && (driver->baseSpeed < 0x20) &&
+		           (driver->fireSpeed > -0x20) && (driver->fireSpeed < 0x20)))
+#endif
+		     ) && AH_MaskHint_boolCanSpawn()))
 		{
-			s16 scanlineFrame = save->scanlineFrame - 1;
+			s16 scanlineFrame = save->scanlineFrame;
+#if defined(CTR_NATIVE)
+			if (legacyTicks > 0)
+			{
+				scanlineFrame = (s16)(scanlineFrame - legacyTicks);
+				save->scanlineFrame = scanlineFrame;
+			}
+#else
+			scanlineFrame--;
 			save->scanlineFrame = scanlineFrame;
+#endif
 
 			// if scanline goes past the top
 			if (scanlineFrame < 0)
@@ -97,7 +120,11 @@ void AH_SaveObj_ThTick(struct Thread *t)
 	}
 	else
 	{
-		if (driver->speed < AH_SAVEOBJ_EXIT_SPEED_MAX)
+		if ((driver->speed < AH_SAVEOBJ_EXIT_SPEED_MAX)
+#if defined(CTR_NATIVE)
+		    || (Platform_GetHighRefreshMode() && (driver->baseSpeed > -0x20) && (driver->baseSpeed < 0x20))
+#endif
+		)
 		{
 			// if camera is not transitioning
 			if (((gGT->cameraDC->flags & CAMERA_FLAG_TRANSITION_AWAY) == 0) &&
@@ -144,12 +171,23 @@ void AH_SaveObj_ThTick(struct Thread *t)
 					// if it is time to return to player
 					else
 					{
-						if (
-						    // if you aren't already returning to player
-						    ((cameraFlags & CAMERA_FLAG_TRANSITION_BACK) == 0) &&
+#if defined(CTR_NATIVE)
+						// RECTMENU_Show queues the menu; at 200 Hz this thread can run
+						// again before RECTMENU has promoted it to ptrActiveMenu. Do not
+						// mistake that tiny gap for "menu closed" and immediately send
+						// the camera back to the kart.
+						if (sdata->ptrActiveMenu != NULL)
+						{
+							save->flags |= AH_SAVEOBJ_FLAG_MENU_ACTIVE_SEEN;
+						}
 
-						    // if there's no Menu active
+						if (((save->flags & AH_SAVEOBJ_FLAG_MENU_ACTIVE_SEEN) != 0) &&
+						    ((cameraFlags & CAMERA_FLAG_TRANSITION_BACK) == 0) &&
 						    (sdata->ptrActiveMenu == NULL))
+#else
+						if (((cameraFlags & CAMERA_FLAG_TRANSITION_BACK) == 0) &&
+						    (sdata->ptrActiveMenu == NULL))
+#endif
 						{
 							// toggle flag to return, this either snaps back
 							// or transitions back depending on & 0x200 (like 0x600 or 0xe00)
@@ -179,7 +217,19 @@ LAB_800af72c:
 		if ((int)animFrame < numAnimFrames - 1)
 		{
 			// increment animation frame
+#if defined(CTR_NATIVE)
+			if (legacyTicks > 0)
+			{
+				int nextFrame = (int)animFrame + legacyTicks;
+				if (nextFrame > numAnimFrames - 1)
+				{
+					nextFrame = numAnimFrames - 1;
+				}
+				saveInst->animFrame = (s16)nextFrame;
+			}
+#else
 			saveInst->animFrame += 1;
+#endif
 		}
 
 		// if animation is finished,

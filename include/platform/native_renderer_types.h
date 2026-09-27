@@ -20,7 +20,7 @@
 #define TPAGE_WIDTH            (256)
 #define TPAGE_HEIGHT           (256)
 
-#define MAX_VERTEX_BUFFER_SIZE (1u << 16)
+#define MAX_VERTEX_BUFFER_SIZE (1u << 20)
 
 #pragma pack(push, 1)
 typedef struct
@@ -30,6 +30,8 @@ typedef struct
 	u8 u, v, bright, dither;
 	u8 r, g, b, a;
 
+	// tcx/tcy keep the native texture-edge hint. _p0/_p1 carry optional
+	// native subpixel X/Y fractions in signed 1/128-pixel units.
 	s8 tcx, tcy, _p0, _p1;
 } GrVertex;
 #pragma pack(pop)

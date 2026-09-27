@@ -247,6 +247,10 @@ void AH_WarpPad_ThTick(struct Thread *t)
 
 	int champID;
 	int champSlot;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	char randKartSpawn[8];
 
@@ -439,7 +443,13 @@ void AH_WarpPad_ThTick(struct Thread *t)
 		warppadObj->spinRot_Prize.x = 0;
 		warppadObj->spinRot_Prize.z = 0;
 
-		warppadObj->spinRot_Prize.y += AH_WP_SPIN_PRIZE_STEP;
+		{
+			int spinTicks = 1;
+#if defined(CTR_NATIVE)
+			spinTicks = Platform_GetLegacy30HzTicks();
+#endif
+			warppadObj->spinRot_Prize.y += AH_WP_SPIN_PRIZE_STEP * spinTicks;
+		}
 
 		struct Instance *closedItemInst = instArr[WPIS_CLOSED_ITEM];
 
@@ -568,7 +578,10 @@ void AH_WarpPad_ThTick(struct Thread *t)
 	if (levelID >= AH_WP_ID_FIRST_GEM_CUP)
 	{
 		warppadObj->boolEnteredWarppad = 1;
-		warppadObj->framesWarping++;
+		if (legacyTicks > 0)
+		{
+			warppadObj->framesWarping += legacyTicks;
+		}
 		gGT->drivers[0]->funcPtrs[DRIVER_FUNC_INIT] = VehStuckProc_Warp_Init;
 		if (warppadObj->framesWarping < AH_WP_WARP_LOAD_FRAMES)
 		{
@@ -592,7 +605,10 @@ void AH_WarpPad_ThTick(struct Thread *t)
 	if (((u16)(levelID - AH_WP_ID_SLIDE_COLISEUM)) < 2)
 	{
 		warppadObj->boolEnteredWarppad = 1;
-		warppadObj->framesWarping++;
+		if (legacyTicks > 0)
+		{
+			warppadObj->framesWarping += legacyTicks;
+		}
 		gGT->drivers[0]->funcPtrs[DRIVER_FUNC_INIT] = VehStuckProc_Warp_Init;
 		if (warppadObj->framesWarping < AH_WP_WARP_LOAD_FRAMES)
 		{
@@ -607,7 +623,10 @@ void AH_WarpPad_ThTick(struct Thread *t)
 	if ((((u16)(levelID - AH_WP_ID_FIRST_BATTLE_TRACK)) < 2) || (levelID == AH_WP_ID_SKULL_ROCK) || (levelID == AH_WP_ID_ROCKY_ROAD))
 	{
 		warppadObj->boolEnteredWarppad = 1;
-		warppadObj->framesWarping++;
+		if (legacyTicks > 0)
+		{
+			warppadObj->framesWarping += legacyTicks;
+		}
 		gGT->drivers[0]->funcPtrs[DRIVER_FUNC_INIT] = VehStuckProc_Warp_Init;
 		if (warppadObj->framesWarping < AH_WP_WARP_LOAD_FRAMES)
 		{
@@ -710,7 +729,10 @@ void AH_WarpPad_ThTick(struct Thread *t)
 	}
 
 	warppadObj->boolEnteredWarppad = 1;
-	warppadObj->framesWarping++;
+	if (legacyTicks > 0)
+	{
+		warppadObj->framesWarping += legacyTicks;
+	}
 	gGT->drivers[0]->funcPtrs[DRIVER_FUNC_INIT] = VehStuckProc_Warp_Init;
 	if (warppadObj->framesWarping < AH_WP_WARP_LOAD_FRAMES)
 	{
@@ -729,7 +751,10 @@ WarpPad_TrophyAnimateOnly:
 
 	if (warppadObj->framesWarping < AH_WP_TROPHY_PORTAL_HOLD_FRAMES)
 	{
-		warppadObj->framesWarping++;
+		if (legacyTicks > 0)
+		{
+			warppadObj->framesWarping += legacyTicks;
+		}
 	}
 
 	warppadObj->boolEnteredWarppad = 1;
@@ -738,7 +763,7 @@ WarpPad_TrophyAnimateOnly:
 
 WarpPad_AnimateOpen:
 
-	if ((instArr[WPIS_OPEN_BEAM] != 0) && ((gGT->timer & 1) != 0))
+	if ((legacyTicks > 0) && (instArr[WPIS_OPEN_BEAM] != 0) && ((gGT->timer & 1) != 0))
 	{
 		warppadObj->spinRot_Beam.x = 0;
 		warppadObj->spinRot_Beam.z = 0;
@@ -769,34 +794,37 @@ WarpPad_AnimateOpen:
 			warppadObj->spinRot_Wisp[i].x = 0;
 			warppadObj->spinRot_Wisp[i].z = 0;
 
-			warppadObj->spinRot_Wisp[i].y += AH_WP_SPIN_WISP_STEP;
+			if (legacyTicks > 0)
+			{
+				warppadObj->spinRot_Wisp[i].y += AH_WP_SPIN_WISP_STEP * legacyTicks;
+			}
 
 			// converted to TEST in rebuildPS1
 			ConvertRotToMatrix(&instArr[WPIS_OPEN_RING1 + i]->matrix, &warppadObj->spinRot_Wisp[i]);
 
 			// if height hasn't reached max height
-			if (instArr[WPIS_OPEN_RING1 + i]->matrix.t[1] < (warppadInst->matrix.t[1] + wispMaxHeight))
+			if ((legacyTicks > 0) && (instArr[WPIS_OPEN_RING1 + i]->matrix.t[1] < (warppadInst->matrix.t[1] + wispMaxHeight)))
 			{
-				instArr[WPIS_OPEN_RING1 + i]->matrix.t[1] += wispRiseRate;
+				instArr[WPIS_OPEN_RING1 + i]->matrix.t[1] += wispRiseRate * legacyTicks;
 
 				// if height hasn't reached 4x RiseRate,
 				// first 4 frames of rising
 				if (instArr[WPIS_OPEN_RING1 + i]->matrix.t[1] < (warppadInst->matrix.t[1] + wispRiseRate * AH_WP_WISP_FIRST_FRAMES))
 				{
 					// reduce transparency
-					instArr[WPIS_OPEN_RING1 + i]->alphaScale -= AH_WP_WISP_FADE_IN_STEP;
+					instArr[WPIS_OPEN_RING1 + i]->alphaScale -= AH_WP_WISP_FADE_IN_STEP * legacyTicks;
 				}
 
 				// after first 4 frames
 				else
 				{
 					// add transparency as the wisp spirals upward (~0x60  per frame)
-					instArr[WPIS_OPEN_RING1 + i]->alphaScale += AH_WP_WISP_FADE_OUT_RANGE / (wispMaxHeight / wispRiseRate);
+					instArr[WPIS_OPEN_RING1 + i]->alphaScale += (AH_WP_WISP_FADE_OUT_RANGE / (wispMaxHeight / wispRiseRate)) * legacyTicks;
 				}
 			}
 
-			// eached max height
-			else
+			// reached max height (only advance/reset on a legacy content tick)
+			else if (legacyTicks > 0)
 			{
 				// reset height
 				instArr[WPIS_OPEN_RING1 + i]->matrix.t[1] = warppadInst->matrix.t[1];
@@ -819,7 +847,10 @@ WarpPad_AnimateOpen:
 		wispRiseRate += AH_WP_WISP_RISE_RATE_STEP;
 	}
 
-	warppadObj->spinRot_Prize.y += AH_WP_SPIN_PRIZE_REWARD_STEP;
+	if (legacyTicks > 0)
+	{
+		warppadObj->spinRot_Prize.y += AH_WP_SPIN_PRIZE_REWARD_STEP * legacyTicks;
+	}
 
 	rewardScale = 0x100;
 
@@ -876,8 +907,11 @@ WarpPad_AnimateOpen:
 			}
 		}
 
-		warppadObj->thirds[i] += AH_WP_REWARD_PHASE_STEP;
-		warppadObj->spinRot_Rewards.y += AH_WP_SPIN_REWARD_RING_STEP;
+		if (legacyTicks > 0)
+		{
+			warppadObj->thirds[i] += AH_WP_REWARD_PHASE_STEP * legacyTicks;
+			warppadObj->spinRot_Rewards.y += AH_WP_SPIN_REWARD_RING_STEP * legacyTicks;
+		}
 	}
 
 	if (instArr[WPIS_CLOSED_1S] != 0)

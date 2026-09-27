@@ -609,6 +609,15 @@ void PushBuffer_UpdateFrustum(struct PushBuffer *pb)
 
 	val_X = pb->rect.w;
 	val_X = val_X / 2;
+#if defined(CTR_NATIVE)
+	// Match the horizontal GTE projection scale (3/4 in 16:9). Expand
+	// the world-space frustum too, so geometry at the new sides survives
+	// BSP/frustum culling. Round outward; leave vertical FOV unchanged.
+	if (Platform_GetWideMode())
+	{
+		val_X = (val_X * 4 + 2) / 3;
+	}
+#endif
 
 	val_Y = ((pb->rect.h * 0x600) / 0x360);
 	val_Y = val_Y / 2;

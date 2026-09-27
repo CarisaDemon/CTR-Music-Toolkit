@@ -307,8 +307,15 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		}
 
 		// Needed, or else Post-Boss Outro
-		// will break the character animations
+		// will break the character animations.
+		// Native must also invalidate the model pointer list immediately: while the
+		// replacement MPK is loading, MainFrame still cycles model textures every frame.
+		// Leaving PLYROBJECTLIST pointed at the old MPK creates a use-after-free/stale
+		// pointer window during boss cutscene transitions (for example, entering Tiny).
 		sdata->ptrMPK = 0;
+#if defined(CTR_NATIVE)
+		sdata->PLYROBJECTLIST = 0;
+#endif
 
 		// Clear driver extras
 		for (int i = 0; i < LOAD_DRIVER_MODEL_EXTRA_COUNT; i++)

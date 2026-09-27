@@ -11,6 +11,8 @@
 #include <platform/native_renderer.h>
 #include <platform/native_gpu.h>
 #include <platform/native_perf.h>
+#include "platform/native_log.h"
+#include <SDL3/SDL.h>
 #include <gpu.h>
 #include <platform.h>
 
@@ -37,6 +39,9 @@ int ClearImage2(RECT16 *rect, uint8_t r, uint8_t g, uint8_t b)
 
 int DrawSync(int mode)
 {
+#if defined(CTR_INTERNAL)
+	const u64 drawSyncStart = SDL_GetPerformanceCounter();
+#endif
 	(void)mode;
 
 	NativeRenderer_UpdateVRAM();
@@ -50,6 +55,23 @@ int DrawSync(int mode)
 	{
 		drawsync_callback();
 	}
+
+#if defined(CTR_INTERNAL)
+	if (Platform_GetHighRefreshMode())
+	{
+		static u64 totalTicks = 0;
+		static int sampleCount = 0;
+		const u64 freq = SDL_GetPerformanceFrequency();
+		const u64 drawSyncEnd = SDL_GetPerformanceCounter();
+		totalTicks += drawSyncEnd - drawSyncStart;
+		sampleCount++;
+		if ((sampleCount == 240) && (freq != 0))
+		{
+			const double avgMs = ((double)totalTicks * 1000.0) / ((double)freq * (double)sampleCount);
+			Platform_Log("[CTR Native] V70 DrawSync average over %d calls: %.3f ms\n", sampleCount, avgMs);
+		}
+	}
+#endif
 
 	return 0;
 }

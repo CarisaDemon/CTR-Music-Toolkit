@@ -212,7 +212,11 @@ void UI_CupStandings_InputAndDraw(void)
 	if ((sdata->framesSinceRaceEnded < UI_CUP_STANDINGS_PAGE_TRANSITION_FRAME) ||
 	    ((sdata->framesSinceRaceEnded < UI_CUP_STANDINGS_OVERALL_HOLD_FRAME) && ((sdata->menuReadyToPass & UI_CUP_STANDINGS_PAGE_OVERALL_POINTS) != 0)))
 	{
+#if defined(CTR_NATIVE)
+		sdata->framesSinceRaceEnded += Platform_GetLegacy30HzTicks();
+#else
 		sdata->framesSinceRaceEnded++;
+#endif
 	}
 
 	if ((sdata->framesSinceRaceEnded < UI_CUP_STANDINGS_QUICK_SKIP_FRAME) &&

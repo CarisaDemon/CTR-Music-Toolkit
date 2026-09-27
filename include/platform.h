@@ -27,6 +27,18 @@ int Platform_GetVBlankCount(void);
 void Platform_WaitUntilVBlank(int targetVBlank);
 void Platform_PollHostEvents(void);
 int Platform_PollInput(void);
+#if defined(CTR_NATIVE)
+int Platform_GetWideMode(void);
+void Platform_SetWideMode(int enabled);
+int Platform_GetHighRefreshMode(void);
+void Platform_SetHighRefreshMode(int enabled);
+int Platform_GetHighRefreshTargetFPS(void);
+void Platform_WaitForHighRefreshFrame(void);
+void Platform_UpdateLegacy30HzClock(int elapsedTimeMS);
+int Platform_GetLegacy30HzTicks(void);
+int Platform_GetSubpixelMode(void);
+void Platform_SetSubpixelMode(int enabled);
+#endif
 
 #if defined(CTR_NATIVE)
 int NikoGetEnterKey(void);

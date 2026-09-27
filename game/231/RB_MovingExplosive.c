@@ -12,6 +12,10 @@ void RB_MovingExplosive_ThTick(struct Thread *t)
 {
 	s16 desiredRotY;
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 	s16 modelID;
 	int deltaX;
 	int deltaZ;
@@ -88,9 +92,10 @@ LAB_800adc08:;
 	    // if driver is invalid
 	    (driverTarget == 0) || (tw->blindFrames != 0))
 	{
-		if (tw->blindFrames != 0)
+		if ((tw->blindFrames != 0) && (legacyTicks > 0))
 		{
-			tw->blindFrames--;
+			int value = tw->blindFrames - legacyTicks;
+			tw->blindFrames = (value > 0) ? value : 0;
 		}
 	}
 	else
@@ -111,7 +116,11 @@ LAB_800adc08:;
 		// if seeking mine
 		else
 		{
-			tw->framesSeekTargetTnt--;
+			if (legacyTicks > 0)
+			{
+				int value = tw->framesSeekTargetTnt - legacyTicks;
+				tw->framesSeekTargetTnt = (value > 0) ? value : 0;
+			}
 
 			// if target shot a TNT
 			struct Instance *instTNT = tw->driverTarget->instTntSend;
@@ -131,7 +140,8 @@ LAB_800adc08:;
 
 		if ((modelID == DYNAMIC_BOMB) || (modelID == DYNAMIC_SHIELD))
 		{
-			tw->rotY = RB_Hazard_InterpolateValue(tw->rotY, (int)desiredRotY, 4);
+			if (legacyTicks > 0)
+				tw->rotY = RB_Hazard_InterpolateValue(tw->rotY, (int)desiredRotY, 4);
 
 			tw->vel.x = (MATH_Sin(tw->rotY) * 3) >> 7;
 			tw->vel.z = (MATH_Cos(tw->rotY) * 3) >> 7;
@@ -149,7 +159,8 @@ LAB_800adc08:;
 			// if 10 wumpa were not used
 			if ((tw->flags & TRACKER_FLAG_POWERED_UP) == 0)
 			{
-				tw->rotY = RB_Hazard_InterpolateValue(tw->rotY, (int)desiredRotY, 0x40);
+				if (legacyTicks > 0)
+					tw->rotY = RB_Hazard_InterpolateValue(tw->rotY, (int)desiredRotY, 0x40);
 
 				tw->vel.x = (MATH_Sin(tw->rotY) * 5) >> 8;
 				tw->vel.z = (MATH_Cos(tw->rotY) * 5) >> 8;
@@ -158,7 +169,8 @@ LAB_800adc08:;
 			// if 10 wumpa were used
 			else
 			{
-				tw->rotY = RB_Hazard_InterpolateValue(tw->rotY, (int)desiredRotY, 0x80);
+				if (legacyTicks > 0)
+					tw->rotY = RB_Hazard_InterpolateValue(tw->rotY, (int)desiredRotY, 0x80);
 
 				tw->vel.x = (MATH_Sin(tw->rotY) * 3) >> 7;
 				tw->vel.z = (MATH_Cos(tw->rotY) * 3) >> 7;
@@ -176,24 +188,20 @@ LAB_800adc08:;
 	s16 animFrame = inst->animFrame;
 	int animFrameCount = INSTANCE_GetNumAnimFrames(inst, 0);
 
-	// if instance is not at end of animation
-	if ((int)animFrame + 1 < animFrameCount)
+	// animation advances on the retail content clock
+	if (legacyTicks > 0)
 	{
-		// increment animation frame
-		inst->animFrame += 1;
-	}
-
-	// if animation finished
-	else
-	{
-		// go back to first frame of animation
-		inst->animFrame = 0;
+		if ((int)animFrame + 1 < animFrameCount)
+			inst->animFrame += 1;
+		else
+			inst->animFrame = 0;
 	}
 
 #if defined(CTR_NATIVE)
 	if (
 	    // if missile
 	    (modelID == DYNAMIC_ROCKET) &&
+	    (legacyTicks > 0) &&
 
 	    // numPlyrCurrGame < 2
 	    (sdata->gGT->numPlyrCurrGame < 2))

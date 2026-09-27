@@ -14,6 +14,10 @@ int RB_Armadillo_ThCollide(struct Thread *armadilloThread, struct Thread *driver
 
 void RB_Armadillo_ThTick_TurnAround(struct Thread *t)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+		return;
+#endif
 	struct Instance *armInst;
 	struct Armadillo *armObj;
 
@@ -65,6 +69,10 @@ void RB_Armadillo_ThTick_TurnAround(struct Thread *t)
 
 void RB_Armadillo_ThTick_Rolling(struct Thread *t)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+		return;
+#endif
 	struct Instance *armInst;
 	struct Armadillo *armObj;
 	SVECTOR rot;

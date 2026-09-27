@@ -29,8 +29,15 @@ void SelectProfile_ThTick(struct Thread *t)
 	{
 		int slot = i % 3;
 		struct Instance *inst = icon->inst;
-
+#if defined(CTR_NATIVE)
+		int ticks = Platform_GetHighRefreshMode() ? Platform_GetLegacy30HzTicks() : 1;
+		if (ticks > 0)
+		{
+			icon->rot.y = (s16)(icon->rot.y + sdata->LoadSave_SpinRateY[slot] * ticks);
+		}
+#else
 		icon->rot.y = (s16)(icon->rot.y + sdata->LoadSave_SpinRateY[slot]);
+#endif
 
 #if defined(CTR_NATIVE)
 		// NOTE(aalhendi): Menu-storage can keep this thread alive when the
@@ -1274,7 +1281,23 @@ static int SelectProfile_ShouldFinalize(void)
 	    (*SelectProfile_AllProfiles_ExitToPrevious() == 0) && (*SelectProfile_AllProfiles_ActionDone() == 0) &&
 	    (*SelectProfile_AllProfiles_TimerSaveComplete() != 0))
 	{
+#if defined(CTR_NATIVE)
+		if (!Platform_GetHighRefreshMode())
+		{
+			(*SelectProfile_AllProfiles_TimerSaveComplete())--;
+		}
+		else
+		{
+			int ticks = Platform_GetLegacy30HzTicks();
+			if (ticks > 0)
+			{
+				int value = *SelectProfile_AllProfiles_TimerSaveComplete() - ticks;
+				*SelectProfile_AllProfiles_TimerSaveComplete() = (s16)((value > 0) ? value : 0);
+			}
+		}
+#else
 		(*SelectProfile_AllProfiles_TimerSaveComplete())--;
+#endif
 		return 0;
 	}
 

@@ -217,6 +217,10 @@ void MM_Battle_MenuProc(struct RectMenu *unused)
 	s16 teamPlayerCounts[BATTLE_TEAM_COUNT];
 
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	// save all five battle settings,
 	// these are selected rows from all battle options
@@ -235,8 +239,9 @@ void MM_Battle_MenuProc(struct RectMenu *unused)
 			{
 				MM_TransitionInOut(D230.transitionMeta_battle, (int)D230.battleTransition.frame, BATTLE_ANIMATED_TRANSITION_META_COUNT);
 
-				// reduce frames
-				nextTransitionFrames = D230.battleTransition.frame - 1;
+				// reduce frames on the retail content clock
+				nextTransitionFrames = D230.battleTransition.frame - legacyTicks;
+				if (nextTransitionFrames < 0) nextTransitionFrames = 0;
 
 				// if finished
 				if (D230.battleTransition.frame == 0)
@@ -254,8 +259,8 @@ void MM_Battle_MenuProc(struct RectMenu *unused)
 			{
 				MM_TransitionInOut(D230.transitionMeta_battle, (int)D230.battleTransition.frame, BATTLE_ANIMATED_TRANSITION_META_COUNT);
 
-				// count frames
-				D230.battleTransition.frame++;
+				// count retail content frames
+				D230.battleTransition.frame += legacyTicks;
 
 				nextTransitionFrames = D230.battleTransition.frame;
 

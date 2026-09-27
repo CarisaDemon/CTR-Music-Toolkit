@@ -1,5 +1,23 @@
 #include <common.h>
 
+#ifdef CTR_NATIVE
+// Build separate native menu rows; the retail overlay has fixed-size arrays.
+static struct MenuRow s_titleMenuRowsWithOptions[9];
+
+static void MM_SetupTitleOptionsRow(struct RectMenu *mainMenu)
+{
+	int hasScrapbook = CHECK_ADV_BIT(sdata->gameProgress.unlocks, GAME_UNLOCK_BIT_SCRAPBOOK);
+	int count = hasScrapbook ? 7 : 6;
+	const struct MenuRow *original = hasScrapbook ? D230.rowsMainMenuWithScrapbook : D230.rowsMainMenuBasic;
+
+	memcpy(s_titleMenuRowsWithOptions, original, (size_t)count * sizeof(struct MenuRow));
+	s_titleMenuRowsWithOptions[count - 1].rowOnPressDown = count;
+	s_titleMenuRowsWithOptions[count - 1].rowOnPressRight = count;
+	s_titleMenuRowsWithOptions[count] = (struct MenuRow){LNG_OPTIONS, count - 1, count, count - 1, count};
+	s_titleMenuRowsWithOptions[count + 1] = (struct MenuRow){RECTMENU_STRING_NONE};
+	mainMenu->rows = s_titleMenuRowsWithOptions;
+}
+#endif
 // NOTE(aalhendi): ASM-verified against retail 230 0x800abaf0-0x800abcac.
 u8 MM_TransitionInOut(struct TransitionMeta *meta, int framesPassed, int numFrames)
 {
@@ -47,11 +65,21 @@ void MM_MenuProc_Main(struct RectMenu *mainMenu)
 {
 	struct GameTracker *gGT = sdata->gGT;
 
+#ifdef CTR_NATIVE
+	MM_SetupTitleOptionsRow(mainMenu);
+	if (MainFreeze_TitleOptionsIsOpen())
+	{
+		gGT->demoCountdownTimer = TITLE_DEMO_IDLE_FRAMES;
+		MainFreeze_MenuPtrOptions(&data.menuRacingWheelConfig);
+		return;
+	}
+#else
 	// if scrapbook is unlocked, change "rows" to extended array
 	if (CHECK_ADV_BIT(sdata->gameProgress.unlocks, GAME_UNLOCK_BIT_SCRAPBOOK))
 	{
 		mainMenu->rows = &D230.rowsMainMenuWithScrapbook[0];
 	}
+#endif
 
 	MM_ParseCheatCodes();
 	MM_ToggleRows_Difficulty();
@@ -77,7 +105,14 @@ void MM_MenuProc_Main(struct RectMenu *mainMenu)
 			// if no buttons pressed, check demo mode
 			if (sdata->gGamepads->anyoneHeldCurr == 0)
 			{
+#if defined(CTR_NATIVE)
+				{
+					int value = gGT->demoCountdownTimer - Platform_GetLegacy30HzTicks();
+					gGT->demoCountdownTimer = (value > 0) ? value : 0;
+				}
+#else
 				gGT->demoCountdownTimer--;
+#endif
 
 				// If time runs out
 				if (gGT->demoCountdownTimer < 1)
@@ -137,6 +172,14 @@ void MM_MenuProc_Main(struct RectMenu *mainMenu)
 	{
 		return;
 	}
+
+#ifdef CTR_NATIVE
+	if (mainMenu->rows[mainMenu->rowSelected].stringIndex == LNG_OPTIONS)
+	{
+		MainFreeze_OpenTitleOptions(mainMenu);
+		return;
+	}
+#endif
 
 	// clear flags from game mode
 	gGT->gameMode1 &= ~(BATTLE_MODE | ADVENTURE_MODE | TIME_TRIAL | ADVENTURE_ARENA | ARCADE_MODE | ADVENTURE_CUP);

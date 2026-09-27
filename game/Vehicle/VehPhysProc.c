@@ -249,6 +249,7 @@ void VehPhysProc_Driving_PhysLinear(struct Thread *thread, struct Driver *driver
 	u32 square;
 
 	int msPerFrame;
+	int legacyTicks = 1;
 	RainCloudEffect rainCloudEffect;
 	u32 itemSound;
 	u32 actionsFlagSetNext;
@@ -277,8 +278,12 @@ void VehPhysProc_Driving_PhysLinear(struct Thread *thread, struct Driver *driver
 	// === Count Timers ===
 
 
-	// elapsed milliseconds per frame, ~32
+	// Real elapsed milliseconds per update (~5 at 200 FPS). Frame-counted
+	// retail state advances separately on the 32 ms legacy clock.
 	msPerFrame = gGT->elapsedTimeMS;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	if ((gGT->elapsedEventTime < 10 * MINUTE) && ((driver->actionsFlagSet & ACTION_RACE_TIMER_FROZEN) == 0))
 	{
@@ -324,9 +329,10 @@ void VehPhysProc_Driving_PhysLinear(struct Thread *thread, struct Driver *driver
 		}
 	}
 
-	if (0 < driver->jump_TenBuffer)
+	if ((0 < driver->jump_TenBuffer) && (legacyTicks > 0))
 	{
-		driver->jump_TenBuffer = (s16)CTR_MipsSubLo(driver->jump_TenBuffer, 1);
+		int value = CTR_MipsSubLo(driver->jump_TenBuffer, legacyTicks);
+		driver->jump_TenBuffer = (s16)((value > 0) ? value : 0);
 	}
 	if (driver->numWumpas >= VEH_PHYS_PROC_TEN_WUMPA_COUNT)
 	{
@@ -511,9 +517,10 @@ void VehPhysProc_Driving_PhysLinear(struct Thread *thread, struct Driver *driver
 		}
 
 		// if Item roll is not done
-		else
+		else if (legacyTicks > 0)
 		{
-			driver->itemRollTimer = (s16)CTR_MipsSubLo(driver->itemRollTimer, 1);
+			int value = CTR_MipsSubLo(driver->itemRollTimer, legacyTicks);
+			driver->itemRollTimer = (s16)((value > 0) ? value : 0);
 		}
 	}
 
@@ -540,7 +547,11 @@ void VehPhysProc_Driving_PhysLinear(struct Thread *thread, struct Driver *driver
 			driver->heldItemID = HELD_ITEM_NONE;
 		}
 
-		driver->noItemTimer = (s16)CTR_MipsSubLo(noItemTimer, 1);
+		if (legacyTicks > 0)
+		{
+			int value = CTR_MipsSubLo(noItemTimer, legacyTicks);
+			driver->noItemTimer = (s16)((value > 0) ? value : 0);
+		}
 	}
 
 	if (driver->invincibleTimer != 0)
@@ -1228,8 +1239,13 @@ SkipSetSteer:
 
 	// Change wheel rotation based on StickLX
 	scratchValue = VehPhysJoystick_GetStrengthAbsolute(scratchValue, VEH_PHYS_PROC_WHEEL_ROTATION_STRENGTH, ptrgamepad->rwd);
-	driverBaseSpeedUshort = VehCalc_InterpBySpeed((int)driver->wheelRotation, VEH_PHYS_PROC_WHEEL_ROTATION_INTERP_STEP, CTR_MipsNegLo(scratchValue));
-	driver->wheelRotation = (s16)driverBaseSpeedUshort;
+	if (legacyTicks > 0)
+	{
+		driverBaseSpeedUshort = VehCalc_InterpBySpeed((int)driver->wheelRotation,
+		                                              CTR_MipsMulLo(VEH_PHYS_PROC_WHEEL_ROTATION_INTERP_STEP, legacyTicks),
+		                                              CTR_MipsNegLo(scratchValue));
+		driver->wheelRotation = (s16)driverBaseSpeedUshort;
+	}
 
 	scratchValue = (int)driver->fireSpeed;
 	if (scratchValue < 0)
@@ -1559,6 +1575,10 @@ void VehPhysProc_PowerSlide_PhysAngular(struct Thread *th, struct Driver *driver
 {
 	(void)th;
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	int axisAngleDelta = CTR_MipsSubLo(ANG_MODULO_TWO_PI(CTR_MipsAddLo(CTR_MipsSubLo(driver->axisRotationX, driver->angle), ANG_PI)), ANG_PI);
 	if (axisAngleDelta != 0)
@@ -1706,8 +1726,12 @@ void VehPhysProc_PowerSlide_PhysAngular(struct Thread *th, struct Driver *driver
 	// interpolate to "neutral" drift
 	if ((desiredSpinRate == 0) || (driftDirection == 0))
 	{
-		// Interpolate by 1 unit, until zero
-		driver->KartStates.Drifting.numFramesDrifting = VehCalc_InterpBySpeed((int)driver->KartStates.Drifting.numFramesDrifting, 1, 0);
+		// This value is explicitly measured in retail frames.
+		if (legacyTicks > 0)
+		{
+			driver->KartStates.Drifting.numFramesDrifting =
+			    VehCalc_InterpBySpeed((int)driver->KartStates.Drifting.numFramesDrifting, legacyTicks, 0);
+		}
 	}
 
 	// if holding a drift
@@ -1716,7 +1740,8 @@ void VehPhysProc_PowerSlide_PhysAngular(struct Thread *th, struct Driver *driver
 		// if drifting right
 		if (driftDirection < 1)
 		{
-			driver->KartStates.Drifting.numFramesDrifting = (s16)CTR_MipsSubLo((u16)driver->KartStates.Drifting.numFramesDrifting, 1);
+			driver->KartStates.Drifting.numFramesDrifting =
+			    (s16)CTR_MipsSubLo((u16)driver->KartStates.Drifting.numFramesDrifting, legacyTicks);
 
 			if (driver->KartStates.Drifting.numFramesDrifting > 0)
 			{
@@ -1727,7 +1752,8 @@ void VehPhysProc_PowerSlide_PhysAngular(struct Thread *th, struct Driver *driver
 		// if drifting left
 		else
 		{
-			driver->KartStates.Drifting.numFramesDrifting = (s16)CTR_MipsAddLo((u16)driver->KartStates.Drifting.numFramesDrifting, 1);
+			driver->KartStates.Drifting.numFramesDrifting =
+			    (s16)CTR_MipsAddLo((u16)driver->KartStates.Drifting.numFramesDrifting, legacyTicks);
 
 			if (driver->KartStates.Drifting.numFramesDrifting < 0)
 			{
@@ -1813,13 +1839,16 @@ void VehPhysProc_PowerSlide_PhysAngular(struct Thread *th, struct Driver *driver
 	int turnAngleStep = CTR_MipsSra(turnAngleDelta, VEH_PHYS_PROC_DRIFT_ANGLE_LERP_SHIFT);
 
 	int turnAngleStepSigned = (s16)turnAngleStep;
-	if (turnAngleDelta != 0)
+	if ((turnAngleDelta != 0) && (legacyTicks > 0))
 	{
 		if (turnAngleStep == 0)
 		{
 			turnAngleStepSigned = 1;
 		}
-		driver->turnAngleCurr = (s16)CTR_MipsAddLo((u16)driver->turnAngleCurr, turnAngleStepSigned);
+		for (int legacyStep = 0; legacyStep < legacyTicks; legacyStep++)
+		{
+			driver->turnAngleCurr = (s16)CTR_MipsAddLo((u16)driver->turnAngleCurr, turnAngleStepSigned);
+		}
 	}
 
 	int numFramesDriftingAbs = driver->KartStates.Drifting.numFramesDrifting;
@@ -1900,17 +1929,32 @@ void VehPhysProc_PowerSlide_PhysAngular(struct Thread *th, struct Driver *driver
 			turnWobbleVelocityAbs = CTR_MipsNegLo(turnWobbleVelocityAbs);
 		}
 
-		// move down until zero
-		turnWobbleAngleNext = VehCalc_InterpBySpeed(driver->turnWobbleAngle, turnWobbleVelocityAbs, 0);
+		// move down until zero on the legacy frame clock
+		if (legacyTicks > 0)
+		{
+			turnWobbleAngleNext = VehCalc_InterpBySpeed(driver->turnWobbleAngle,
+			                                             CTR_MipsMulLo(turnWobbleVelocityAbs, legacyTicks), 0);
+		}
+		else
+		{
+			turnWobbleAngleNext = driver->turnWobbleAngle;
+		}
 	}
 
 	// frames counting down
 	else
 	{
-		driver->turnWobbleTimer = (s16)CTR_MipsSubLo((u16)driver->turnWobbleTimer, 1);
-
-		// move up each frame
-		turnWobbleAngleNext = CTR_MipsAddLo((u16)driver->turnWobbleAngle, (u16)driver->turnWobbleVelocity);
+		if (legacyTicks > 0)
+		{
+			int timer = CTR_MipsSubLo((u16)driver->turnWobbleTimer, legacyTicks);
+			driver->turnWobbleTimer = (s16)((timer > 0) ? timer : 0);
+			turnWobbleAngleNext = CTR_MipsAddLo((u16)driver->turnWobbleAngle,
+			                                         CTR_MipsMulLo((int)driver->turnWobbleVelocity, legacyTicks));
+		}
+		else
+		{
+			turnWobbleAngleNext = driver->turnWobbleAngle;
+		}
 	}
 
 	// near-spinout distortion SFX
@@ -1975,8 +2019,15 @@ void PhysLerpRot(struct Driver *driver, int targetRotW)
 		maxLerpStep = lerpStep;
 	}
 
-	// Interpolate rotation by speed
+	// This retail interpolation speed is in units per 30 Hz frame.
+#if defined(CTR_NATIVE)
+	if (Platform_GetLegacy30HzTicks() > 0)
+	{
+		driver->rotPrev.w = VehCalc_InterpBySpeed((int)driver->rotPrev.w, 8, maxLerpStep);
+	}
+#else
 	driver->rotPrev.w = VehCalc_InterpBySpeed((int)driver->rotPrev.w, 8, maxLerpStep);
+#endif
 
 	// Interpolate rotation by speed
 	driver->rotCurr.w = VehCalc_InterpBySpeed((int)driver->rotCurr.w, CTR_MipsSra(CTR_MipsMulLo(driver->rotPrev.w, sdata->gGT->elapsedTimeMS), 5), targetRotW);
@@ -2277,6 +2328,12 @@ void VehPhysProc_SlamWall_PhysLinear(struct Thread *t, struct Driver *d)
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x80063b2c-0x80063bd4.
 void VehPhysProc_SlamWall_Animate(struct Thread *t, struct Driver *d)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+	{
+		return;
+	}
+#endif
 	struct Instance *inst = t->inst;
 
 	inst->animFrame = (s16)CTR_MipsAddLo((u16)inst->animFrame, 1);
@@ -2429,11 +2486,16 @@ void VehPhysProc_SpinFirst_PhysAngular(struct Thread *t, struct Driver *d)
 
 	d->numFramesSpentSteering = VEH_PHYS_PROC_STEER_RESET_FRAMES;
 
-	d->rotationSpinRate = (s16)CTR_MipsSubLo((u16)d->rotationSpinRate, CTR_MipsSra(d->rotationSpinRate, 3));
-	d->turnWobbleAngle = (s16)CTR_MipsSubLo((u16)d->turnWobbleAngle, CTR_MipsSra(d->turnWobbleAngle, 3));
+#if defined(CTR_NATIVE)
+	if (!Platform_GetHighRefreshMode() || (Platform_GetLegacy30HzTicks() > 0))
+#endif
+	{
+		d->rotationSpinRate = (s16)CTR_MipsSubLo((u16)d->rotationSpinRate, CTR_MipsSra(d->rotationSpinRate, 3));
+		d->turnWobbleAngle = (s16)CTR_MipsSubLo((u16)d->turnWobbleAngle, CTR_MipsSra(d->turnWobbleAngle, 3));
 
-	d->turnAngleCurr =
-	    (s16)CTR_MipsSubLo(CTR_MipsAddLo(CTR_MipsAddLo((u16)d->turnAngleCurr, (u16)d->KartStates.Spinning.driftSpinRate), ANG_PI) & (ANG_TWO_PI - 1), ANG_PI);
+		d->turnAngleCurr =
+		    (s16)CTR_MipsSubLo(CTR_MipsAddLo(CTR_MipsAddLo((u16)d->turnAngleCurr, (u16)d->KartStates.Spinning.driftSpinRate), ANG_PI) & (ANG_TWO_PI - 1), ANG_PI);
+	}
 
 	d->ampTurnState = d->rotationSpinRate;
 
@@ -2560,8 +2622,13 @@ void VehPhysProc_SpinLast_PhysAngular(struct Thread *t, struct Driver *d)
 
 	d->numFramesSpentSteering = VEH_PHYS_PROC_STEER_RESET_FRAMES;
 
-	d->rotationSpinRate = (s16)CTR_MipsSubLo((u16)d->rotationSpinRate, CTR_MipsSra(d->rotationSpinRate, 3));
-	d->turnWobbleAngle = (s16)CTR_MipsSubLo((u16)d->turnWobbleAngle, CTR_MipsSra(d->turnWobbleAngle, 3));
+#if defined(CTR_NATIVE)
+	if (!Platform_GetHighRefreshMode() || (Platform_GetLegacy30HzTicks() > 0))
+#endif
+	{
+		d->rotationSpinRate = (s16)CTR_MipsSubLo((u16)d->rotationSpinRate, CTR_MipsSra(d->rotationSpinRate, 3));
+		d->turnWobbleAngle = (s16)CTR_MipsSubLo((u16)d->turnWobbleAngle, CTR_MipsSra(d->turnWobbleAngle, 3));
+	}
 
 	d->ampTurnState = d->rotationSpinRate;
 
@@ -2578,8 +2645,13 @@ void VehPhysProc_SpinLast_PhysAngular(struct Thread *t, struct Driver *d)
 			}
 		}
 
-		d->turnAngleCurr = (s16)CTR_MipsSubLo(
-		    CTR_MipsAddLo(CTR_MipsAddLo((u16)d->turnAngleCurr, (u16)d->KartStates.Spinning.driftSpinRate), ANG_PI) & (ANG_TWO_PI - 1), ANG_PI);
+#if defined(CTR_NATIVE)
+		if (!Platform_GetHighRefreshMode() || (Platform_GetLegacy30HzTicks() > 0))
+#endif
+		{
+			d->turnAngleCurr = (s16)CTR_MipsSubLo(
+			    CTR_MipsAddLo(CTR_MipsAddLo((u16)d->turnAngleCurr, (u16)d->KartStates.Spinning.driftSpinRate), ANG_PI) & (ANG_TWO_PI - 1), ANG_PI);
+		}
 
 		if ((d->KartStates.Spinning.driftSpinRate > 0) && (d->turnAngleCurr > 0))
 		{
@@ -2600,8 +2672,13 @@ void VehPhysProc_SpinLast_PhysAngular(struct Thread *t, struct Driver *d)
 			}
 		}
 
-		d->turnAngleCurr = (s16)CTR_MipsSubLo(
-		    CTR_MipsAddLo(CTR_MipsAddLo((u16)d->turnAngleCurr, (u16)d->KartStates.Spinning.driftSpinRate), ANG_PI) & (ANG_TWO_PI - 1), ANG_PI);
+#if defined(CTR_NATIVE)
+		if (!Platform_GetHighRefreshMode() || (Platform_GetLegacy30HzTicks() > 0))
+#endif
+		{
+			d->turnAngleCurr = (s16)CTR_MipsSubLo(
+			    CTR_MipsAddLo(CTR_MipsAddLo((u16)d->turnAngleCurr, (u16)d->KartStates.Spinning.driftSpinRate), ANG_PI) & (ANG_TWO_PI - 1), ANG_PI);
+		}
 
 		if ((d->KartStates.Spinning.driftSpinRate < 0) && (d->turnAngleCurr < 0))
 		{
@@ -2687,6 +2764,12 @@ void VehPhysProc_SpinStop_PhysAngular(struct Thread *t, struct Driver *d)
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x800643d4-0x800644d0.
 void VehPhysProc_SpinStop_Animate(struct Thread *t, struct Driver *d)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+	{
+		return;
+	}
+#endif
 	struct Instance *inst = t->inst;
 
 	int numFrames = VehFrameInst_GetNumAnimFrames(inst, inst->animIndex);

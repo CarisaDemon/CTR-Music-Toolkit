@@ -17,6 +17,10 @@ void MM_CupSelect_Init(void)
 void MM_CupSelect_MenuProc(struct RectMenu *menu)
 {
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	if (menu->funcState == RECTMENU_FUNC_STATE_INPUT)
 	{
@@ -46,9 +50,10 @@ void MM_CupSelect_MenuProc(struct RectMenu *menu)
 				D230.menuCupSelect.state |= EXECUTE_FUNCPTR;
 			}
 
-			else
+			else if (legacyTicks > 0)
 			{
-				elapsedFrames--;
+				elapsedFrames -= legacyTicks;
+				if (elapsedFrames < 0) elapsedFrames = 0;
 			}
 		}
 		// if transitioning out
@@ -56,8 +61,8 @@ void MM_CupSelect_MenuProc(struct RectMenu *menu)
 		{
 			MM_TransitionInOut(D230.transitionMeta_cupSel, elapsedFrames, MM_CUP_SELECT_LERP_FRAMES);
 
-			// increase frame count
-			elapsedFrames++;
+			// increase retail frame count
+			elapsedFrames += legacyTicks;
 
 			// if more than 12 frames pass
 			if (MM_CUP_SELECT_TRANSITION_OUT_DONE_FRAME < elapsedFrames)

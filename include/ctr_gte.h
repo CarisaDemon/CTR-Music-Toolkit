@@ -111,16 +111,25 @@ static inline void CTR_GteLoadLVL(const s32 *v)
 static inline void CTR_GteStoreSXY(void *xy)
 {
 	CTR_GteStoreU32(xy, MFC2(14));
+#if defined(CTR_NATIVE)
+	NativeGTE_RecordSXYStore(xy, 2);
+#endif
 }
 
 static inline void CTR_GteStoreSXY0(void *xy)
 {
 	CTR_GteStoreU32(xy, MFC2(12));
+#if defined(CTR_NATIVE)
+	NativeGTE_RecordSXYStore(xy, 0);
+#endif
 }
 
 static inline void CTR_GteStoreSXY1(void *xy)
 {
 	CTR_GteStoreU32(xy, MFC2(13));
+#if defined(CTR_NATIVE)
+	NativeGTE_RecordSXYStore(xy, 1);
+#endif
 }
 
 static inline void CTR_GteStoreSXY2(void *xy)
@@ -133,6 +142,11 @@ static inline void CTR_GteStoreSXY3(void *xy0, void *xy1, void *xy2)
 	CTR_GteStoreU32(xy0, MFC2(12));
 	CTR_GteStoreU32(xy1, MFC2(13));
 	CTR_GteStoreU32(xy2, MFC2(14));
+#if defined(CTR_NATIVE)
+	NativeGTE_RecordSXYStore(xy0, 0);
+	NativeGTE_RecordSXYStore(xy1, 1);
+	NativeGTE_RecordSXYStore(xy2, 2);
+#endif
 }
 
 static inline s32 CTR_GteReadMAC1(void)

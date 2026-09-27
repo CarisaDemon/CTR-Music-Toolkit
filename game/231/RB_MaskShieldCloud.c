@@ -456,8 +456,13 @@ void RB_ShieldDark_ThTick_Grow(struct Thread *th)
 		colorInst->scale.y = scaleY;
 		colorInst->scale.z = scaleXZ;
 
-		// next frame
+		// next retail animation frame
+#if defined(CTR_NATIVE)
+		shield->animFrame += Platform_GetLegacy30HzTicks();
+		if (shield->animFrame > 8) shield->animFrame = 8;
+#else
 		shield->animFrame++;
+#endif
 	}
 
 	// if animation is done
@@ -686,17 +691,18 @@ void RB_RainCloud_ThTick(struct Thread *t)
 	numFrames = INSTANCE_GetNumAnimFrames(inst, 0);
 
 	// if you have not reached the end of the animation
-	if ((int)animFrame < numFrames - 1)
+#if defined(CTR_NATIVE)
+	if (Platform_GetLegacy30HzTicks() > 0)
+#endif
 	{
-		// increment animation frame
-		inst->animFrame++;
-	}
-
-	// if animation is done
-	else
-	{
-		// restart animation
-		inst->animFrame = 0;
+		if ((int)animFrame < numFrames - 1)
+		{
+			inst->animFrame++;
+		}
+		else
+		{
+			inst->animFrame = 0;
+		}
 	}
 
 	// X, Y, Z

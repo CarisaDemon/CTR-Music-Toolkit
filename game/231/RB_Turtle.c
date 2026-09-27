@@ -7,6 +7,10 @@ void RB_Turtle_ThTick(struct Thread *t)
 	struct Turtle *turtleObj;
 	struct Instance *turtleInst;
 	int currTimer;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	turtleObj = t->object;
 	turtleInst = t->inst;
@@ -42,6 +46,9 @@ void RB_Turtle_ThTick(struct Thread *t)
 		// time to rise
 		else
 		{
+			if (legacyTicks <= 0)
+				return;
+
 			// turtle not fully down,
 			// impacts jumping
 			turtleObj->state = TURTLE_STATE_NOT_FULLY_DOWN;
@@ -96,6 +103,9 @@ void RB_Turtle_ThTick(struct Thread *t)
 		// time to fall
 		else
 		{
+			if (legacyTicks <= 0)
+				return;
+
 			// use timer variables for frame counting
 
 			// increment frame (make turtle fall)

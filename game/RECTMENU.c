@@ -917,7 +917,12 @@ void RECTMENU_ProcessState()
 	// unused
 	if (sdata->framesRemainingInMenu != 0)
 	{
+#if defined(CTR_NATIVE)
+		int value = sdata->framesRemainingInMenu - Platform_GetLegacy30HzTicks();
+		sdata->framesRemainingInMenu = (value > 0) ? value : 0;
+#else
 		sdata->framesRemainingInMenu--;
+#endif
 	}
 
 	// if you want to change the Menu

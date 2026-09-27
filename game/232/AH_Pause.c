@@ -671,7 +671,16 @@ void AH_Pause_Update(void)
 	// page is flipping
 	if (D232.pausePageTimer > 0)
 	{
+#if defined(CTR_NATIVE)
+		int ticks = Platform_GetLegacy30HzTicks();
+		if (ticks > 0)
+		{
+			int value = D232.pausePageTimer - ticks;
+			D232.pausePageTimer = (value > 0) ? value : 0;
+		}
+#else
 		D232.pausePageTimer--;
+#endif
 	}
 	// page is not flipping, flip desired
 	else if (gGT->advPausePage != D232.pausePageCurr)

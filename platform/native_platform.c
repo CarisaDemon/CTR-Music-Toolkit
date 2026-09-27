@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 SDL_Window *g_window = NULL;
 int g_dbg_polygonSelected = 0;
@@ -27,11 +28,13 @@ extern int g_dbg_texturelessMode;
 extern int g_dbg_wireframeMode;
 extern int g_windowHeight;
 extern int g_windowWidth;
+void NativeGTE_SubpixelBeginFrame(void);
 
 #define HOST_ALT_LEFT  (1 << 0)
 #define HOST_ALT_RIGHT (1 << 1)
 global_variable int s_hostAltKeyState = 0;
 global_variable int s_platformInitialized = 0;
+global_variable int s_videoWideMode = 0;
 global_variable int s_platformBeginScene = 0;
 global_variable int s_pinnedVramDisplayFrames = 0;
 global_variable int s_pinnedVramDisplayCustomRect = 0;
@@ -43,16 +46,66 @@ global_variable int s_pinnedVramDisplayH = 0;
 global_variable int s_fpsFrameCount = 0;
 global_variable u64 s_fpsLastCounter = 0;
 
+global_variable int g_cfg_highRefreshPresentation = 1;
+int g_cfg_subpixelGeometry = 0;
+#define NATIVE_HOST_PRESENT_HZ_FALLBACK 60
+global_variable int s_highRefreshTargetFPS = NATIVE_HOST_PRESENT_HZ_FALLBACK;
+global_variable SDL_DisplayID s_highRefreshDisplayID = 0;
+global_variable u64 s_highRefreshLastDisplayCheckCounter = 0;
+global_variable u64 s_hostPresentCount = 0;
+global_variable u64 s_hostPresentNextCounter = 0;
+global_variable u64 s_hostInterpolationStartCounter = 0;
+global_variable int s_hostInterpolationActive = 0;
+
+// When HIGH REFRESH is enabled this is the actual game-loop target, not a
+// presentation-only multiplier. VBlank remains independently emulated at 60 Hz.
+global_variable u64 s_nextHighRefreshFrameCounter = 0;
+global_variable u64 s_highRefreshFrameRemainder = 0;
+
+// Many retail systems use "one frame" as a unit of time. At 200 FPS those
+// counters must not advance on every host update. Accumulate real elapsed
+// milliseconds and emit PS1-shaped 32 ms ticks while the real loop stays fast.
+global_variable int s_legacy30AccumulatorMS = 0;
+global_variable int s_legacy30Ticks = 1;
+
+void Platform_UpdateLegacy30HzClock(int elapsedTimeMS)
+{
+	if (!g_cfg_highRefreshPresentation)
+	{
+		s_legacy30AccumulatorMS = 0;
+		s_legacy30Ticks = 1;
+		return;
+	}
+
+	if (elapsedTimeMS < 0)
+	{
+		elapsedTimeMS = 0;
+	}
+
+	s_legacy30AccumulatorMS += elapsedTimeMS;
+	s_legacy30Ticks = s_legacy30AccumulatorMS / 32;
+	s_legacy30AccumulatorMS -= s_legacy30Ticks * 32;
+}
+
+int Platform_GetLegacy30HzTicks(void)
+{
+	return s_legacy30Ticks;
+}
+
 int Platform_GetDisplayFPS(void)
 {
-	/* A half-second window is stable without making the readout sluggish. */
+	// Report completed CTR logical frames. High-refresh host presents are not
+	// counted as extra game frames, so this remains ~30 while simulation stays 30 Hz.
 	static u64 lastCounter = 0;
 	static int frameCount = 0;
 	static int displayedFPS = 0;
-	u64 now = SDL_GetPerformanceCounter();
-	u64 frequency = SDL_GetPerformanceFrequency();
+	const u64 now = SDL_GetPerformanceCounter();
+	const u64 frequency = SDL_GetPerformanceFrequency();
 
-	if (frequency == 0) return displayedFPS;
+	if (frequency == 0)
+	{
+		return displayedFPS;
+	}
 	if (lastCounter == 0)
 	{
 		lastCounter = now;
@@ -114,6 +167,113 @@ internal void Platform_GetWindowName(const char *appName, char *buffer, size_t b
 #else
 	snprintf(buffer, bufferSize, "%s", appName);
 #endif
+}
+
+int Platform_GetWideMode(void)
+{
+	return s_videoWideMode;
+}
+
+void Platform_SetWideMode(int enabled)
+{
+	enabled = enabled != 0;
+	if (enabled == s_videoWideMode) { return; }
+	s_videoWideMode = enabled;
+	NativeRenderer_SetDisplayAspect(enabled);
+	FILE *config = fopen("ctr_video.cfg", "wb");
+	if (config != NULL)
+	{
+		fputs(enabled ? "16:9\n" : "4:3\n", config);
+		fclose(config);
+	}
+}
+
+internal int Platform_QueryDisplayRefreshFPS(void)
+{
+	int targetFPS = NATIVE_HOST_PRESENT_HZ_FALLBACK;
+
+	if (g_window != NULL)
+	{
+		const SDL_DisplayID displayID = SDL_GetDisplayForWindow(g_window);
+		const SDL_DisplayMode *mode = (displayID != 0) ? SDL_GetCurrentDisplayMode(displayID) : NULL;
+
+		if ((mode != NULL) && (mode->refresh_rate > 30.0f))
+		{
+			targetFPS = (int)(mode->refresh_rate + 0.5f);
+			s_highRefreshDisplayID = displayID;
+		}
+	}
+
+	if (targetFPS < 30) targetFPS = 30;
+	if (targetFPS > 1000) targetFPS = 1000;
+	return targetFPS;
+}
+
+internal void Platform_RefreshHighRefreshTarget(void)
+{
+	const int targetFPS = Platform_QueryDisplayRefreshFPS();
+	if (targetFPS != s_highRefreshTargetFPS)
+	{
+		s_highRefreshTargetFPS = targetFPS;
+		s_nextHighRefreshFrameCounter = 0;
+		s_highRefreshFrameRemainder = 0;
+		Platform_LogWarn("[CTR Native] display refresh target changed: %d FPS\n", targetFPS);
+	}
+}
+
+int Platform_GetHighRefreshMode(void)
+{
+	return g_cfg_highRefreshPresentation;
+}
+
+int Platform_GetHighRefreshTargetFPS(void)
+{
+	return s_highRefreshTargetFPS;
+}
+
+void Platform_SetHighRefreshMode(int enabled)
+{
+	enabled = enabled != 0;
+	if (enabled == g_cfg_highRefreshPresentation)
+	{
+		return;
+	}
+	g_cfg_highRefreshPresentation = enabled;
+	if (enabled)
+	{
+		Platform_RefreshHighRefreshTarget();
+	}
+	s_hostPresentNextCounter = 0;
+	s_hostInterpolationStartCounter = 0;
+	s_hostInterpolationActive = 0;
+	s_nextHighRefreshFrameCounter = 0;
+	s_highRefreshFrameRemainder = 0;
+	s_legacy30AccumulatorMS = 0;
+	s_legacy30Ticks = 1;
+	NativeGpu_PresentationReset();
+	Platform_LogWarn("[CTR Native] high refresh game loop: %s (display target %d FPS)\n",
+	                 enabled ? "ON" : "OFF", s_highRefreshTargetFPS);
+}
+
+int Platform_GetSubpixelMode(void)
+{
+	return g_cfg_subpixelGeometry;
+}
+
+void Platform_SetSubpixelMode(int enabled)
+{
+	enabled = enabled != 0;
+	if (enabled == g_cfg_subpixelGeometry)
+	{
+		return;
+	}
+	if (!enabled)
+	{
+		NativeGpu_LogSubpixelStats();
+	}
+	g_cfg_subpixelGeometry = enabled;
+	NativeGpu_ResetSubpixelStats();
+	Platform_LogWarn("[CTR Native] subpixel geometry: %s\n", enabled ? "ON" : "OFF");
 }
 
 internal void Platform_HandleWindowResize(int width, int height)
@@ -261,11 +421,26 @@ internal void Platform_HandleKey(int key, char down)
 void Platform_Init(const char *title, int width, int height)
 {
 	char windowName[128];
+	FILE *config = fopen("ctr_video.cfg", "rb");
+	if (config != NULL)
+	{
+		char value[16] = {0};
+		if (fgets(value, sizeof(value), config) != NULL)
+		{
+			if (strncmp(value, "16:9", 4) == 0) { width = 1280; height = 720; }
+			else if (strncmp(value, "4:3", 3) == 0) { width = 800; height = 600; }
+		}
+		fclose(config);
+	}
+	s_videoWideMode = width * 3 > height * 4;
 
 	Platform_LogInit(title);
 	Platform_GetWindowName(title, windowName, sizeof(windowName));
 
 	Platform_Log("[CTR Native] Initialising platform\n");
+	Platform_Log("[CTR Native] TEST BUILD: V80_SPEED_VECTOR_AND_STUN_ANIMS\n");
+	Platform_Log("[CTR Native] startup options: highRefresh=%d subpixel=%d dithering=OFF\n",
+	             g_cfg_highRefreshPresentation, g_cfg_subpixelGeometry);
 
 	if (SDL_Init(SDL_INIT_VIDEO) == 0)
 	{
@@ -289,6 +464,9 @@ void Platform_Init(const char *title, int width, int height)
 		Platform_Shutdown();
 		return;
 	}
+
+	Platform_RefreshHighRefreshTarget();
+	Platform_Log("[CTR Native] display refresh target: %d FPS\n", s_highRefreshTargetFPS);
 
 	atexit(Platform_Shutdown);
 	Platform_UpdateCursorVisibility();
@@ -315,6 +493,7 @@ void Platform_Shutdown(void)
 		g_window = NULL;
 	}
 
+	NativeGpu_LogSubpixelStats();
 	NativeAudio_Shutdown();
 	NativeRenderer_Shutdown();
 
@@ -325,6 +504,15 @@ void Platform_Shutdown(void)
 
 void Platform_BeginFrame(void)
 {
+	// Keep presentation of the previous completed frame alive through the
+	// upcoming RenderVSYNC stall. The new GPU snapshot starts later, in
+	// Platform_BeginScene(), after that wait has completed.
+
+	// Start a fresh native-only sidecar generation. PS1 packet memory and GTE
+	// registers remain untouched; this only lets the renderer associate the
+	// current frame's packet XY stores with their pre-quantized 16.16 positions.
+	NativeGTE_SubpixelBeginFrame();
+
 	// NOTE(aalhendi): Normal rendering begins from DrawOTag after the current
 	// draw env is installed. Starting a host scene here clears the previous env
 	// and can force the host GL driver to block before the retail render-submit path.
@@ -338,6 +526,12 @@ int Platform_BeginScene(void)
 	}
 
 	NativePerf_BeginScope(NATIVE_PERF_BUCKET_PLATFORM_BEGIN_SCENE);
+
+	// High refresh now runs the real game/render loop at the requested rate.
+	// The old presentation-only interpolation path is intentionally inactive.
+	s_hostInterpolationActive = 0;
+	s_hostPresentNextCounter = 0;
+
 	// NOTE(aalhendi): CTR already throttles through the retail VSync/draw-sync
 	// path. Do not add a second SDL swap wait; some GL drivers charge that wait
 	// to the next frame's first clear instead of SDL_GL_SwapWindow.
@@ -363,6 +557,13 @@ int Platform_BeginScene(void)
 	return 1;
 }
 
+internal void Platform_SwapWindowTracked(void)
+{
+	NativeRenderer_SwapWindow();
+	s_hostPresentCount++;
+	s_hostPresentNextCounter = 0;
+}
+
 void Platform_EndScene(void)
 {
 	if (!s_platformBeginScene)
@@ -377,6 +578,8 @@ void Platform_EndScene(void)
 
 	if (s_pinnedVramDisplayFrames > 0)
 	{
+		s_hostInterpolationActive = 0;
+		s_hostPresentNextCounter = 0;
 		// NOTE(aalhendi): Direct VRAM presentation skips StoreFrameBuffer.
 		// Do not let the next DrawSync read stale framebuffer texture data back
 		// into PSX VRAM after a movie/frame upload.
@@ -389,7 +592,7 @@ void Platform_EndScene(void)
 		{
 			NativeRenderer_PresentVRAMDisplay();
 		}
-		NativeRenderer_SwapWindow();
+		Platform_SwapWindowTracked();
 		s_pinnedVramDisplayFrames--;
 		if (s_pinnedVramDisplayFrames <= 0)
 		{
@@ -401,7 +604,9 @@ void Platform_EndScene(void)
 
 	NativeRenderer_StoreFrameBuffer(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
 
-	NativeRenderer_SwapWindow();
+	s_hostInterpolationStartCounter = 0;
+	s_hostInterpolationActive = 0;
+	Platform_SwapWindowTracked();
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_PLATFORM_END_SCENE);
 }
 
@@ -619,15 +824,10 @@ internal void Native_WaitUntilVBlankTarget(void)
 		remaining = s_nextVBlankCounter - now;
 		if (remaining <= spinWindow)
 		{
-			// NOTE(aalhendi): SDL_Delay can wake late. Sleep while safely far
-			// from the VBlank target, then spin the final small window so the
-			// native VBlank emitter is paced by our clock, not the OS scheduler.
 			while (SDL_GetPerformanceCounter() < s_nextVBlankCounter)
 			{
 			}
-
-			NativePerf_EndScope(NATIVE_PERF_BUCKET_VSYNC_WAIT);
-			return;
+			continue;
 		}
 
 		sleepMs = ((remaining - spinWindow) * 1000) / freq;
@@ -679,6 +879,83 @@ internal int Native_CatchUpDueVBlanks(void)
 	}
 
 	return emittedVBlanks;
+}
+
+internal void Native_AdvanceHighRefreshFrameTarget(void)
+{
+	const u64 freq = SDL_GetPerformanceFrequency();
+	const u64 hz = (u64)((s_highRefreshTargetFPS > 0) ? s_highRefreshTargetFPS : NATIVE_HOST_PRESENT_HZ_FALLBACK);
+
+	s_nextHighRefreshFrameCounter += freq / hz;
+	s_highRefreshFrameRemainder += freq % hz;
+	if (s_highRefreshFrameRemainder >= hz)
+	{
+		s_nextHighRefreshFrameCounter++;
+		s_highRefreshFrameRemainder -= hz;
+	}
+}
+
+void Platform_WaitForHighRefreshFrame(void)
+{
+	const u64 freq = SDL_GetPerformanceFrequency();
+	const u64 spinWindow = Native_CounterFromMicroseconds(freq, 500);
+	u64 now;
+
+	if (!g_cfg_highRefreshPresentation || (freq == 0))
+	{
+		return;
+	}
+
+	now = SDL_GetPerformanceCounter();
+	if ((s_highRefreshLastDisplayCheckCounter == 0) ||
+	    (now - s_highRefreshLastDisplayCheckCounter >= freq * 2))
+	{
+		s_highRefreshLastDisplayCheckCounter = now;
+		Platform_RefreshHighRefreshTarget();
+	}
+	if (s_nextHighRefreshFrameCounter == 0)
+	{
+		s_nextHighRefreshFrameCounter = now;
+		s_highRefreshFrameRemainder = 0;
+		Native_AdvanceHighRefreshFrameTarget();
+	}
+
+	// If the process was stalled/debugged for a long time, do not replay a huge
+	// queue of display-rate frames. Rebase to the current host time.
+	if (now > s_nextHighRefreshFrameCounter + (freq / 4))
+	{
+		s_nextHighRefreshFrameCounter = now;
+		s_highRefreshFrameRemainder = 0;
+		Native_AdvanceHighRefreshFrameTarget();
+	}
+
+	while ((now = SDL_GetPerformanceCounter()) < s_nextHighRefreshFrameCounter)
+	{
+		u64 remaining;
+		u64 sleepMs;
+
+		// Keep PS1 VBlank services (audio/input/callbacks) at 60 Hz independently
+		// while the actual game/render loop follows the active display refresh.
+		Native_CatchUpDueVBlanks();
+
+		remaining = s_nextHighRefreshFrameCounter - now;
+		if (remaining <= spinWindow)
+		{
+			while (SDL_GetPerformanceCounter() < s_nextHighRefreshFrameCounter)
+			{
+			}
+			break;
+		}
+
+		sleepMs = ((remaining - spinWindow) * 1000) / freq;
+		if (sleepMs > 0)
+		{
+			SDL_Delay((u32)sleepMs);
+		}
+	}
+
+	Native_CatchUpDueVBlanks();
+	Native_AdvanceHighRefreshFrameTarget();
 }
 
 internal void Native_WaitAndEmitVBlank(void)

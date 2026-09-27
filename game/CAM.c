@@ -1098,6 +1098,10 @@ void CAM_FollowDriver_Normal(struct CameraDC *cDC, struct Driver *d, SVec3 *push
 	SVec3 local_40;
 	SVec3 local_38;
 	struct FlyInData flyInData;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	// backup flags
 	backupFlags = cDC->flags;
@@ -1157,7 +1161,10 @@ void CAM_FollowDriver_Normal(struct CameraDC *cDC, struct Driver *d, SVec3 *push
 			uVar13 = (u32)zoom->percentage1;
 			uVar11 = (u32)zoom->percentage1;
 		}
-		cDC->cameraMoveSpeed = (s32)(uVar11 * cDC->cameraMoveSpeed + (0x100 - uVar13) * x) >> 8;
+		if (legacyTicks > 0)
+		{
+			cDC->cameraMoveSpeed = (s32)(uVar11 * cDC->cameraMoveSpeed + (0x100 - uVar13) * x) >> 8;
+		}
 	}
 
 	// if camera angle changed
@@ -1286,7 +1293,7 @@ void CAM_FollowDriver_Normal(struct CameraDC *cDC, struct Driver *d, SVec3 *push
 	// slight-down view angle
 	if ((d->actionsFlagSet & ACTION_WARP) == 0)
 	{
-		cDC->damagePitchOffset -= 8;
+		cDC->damagePitchOffset -= 8 * legacyTicks;
 		if (cDC->damagePitchOffset < -0x20)
 		{
 			cDC->damagePitchOffset = -0x20;
@@ -1297,7 +1304,7 @@ void CAM_FollowDriver_Normal(struct CameraDC *cDC, struct Driver *d, SVec3 *push
 	// straight-forward angle
 	else
 	{
-		cDC->damagePitchOffset += 8;
+		cDC->damagePitchOffset += 8 * legacyTicks;
 		if (cDC->damagePitchOffset > 0)
 		{
 			cDC->damagePitchOffset = 0;
@@ -1319,7 +1326,13 @@ void CAM_FollowDriver_Normal(struct CameraDC *cDC, struct Driver *d, SVec3 *push
 	cam->delta.z += (s32)cam->rot.z;
 	cam->delta.y += (s32)cam->rot.y + (s32)zoom->angle[2];
 
-	cDC->desiredRot.x = ((zoom->angle[1] * (s32)cDC->desiredRot.x) + ((0x100 - (s32)zoom->angle[1]) * (s32)d->rotCurr.z)) >> 8;
+	if (legacyTicks > 0)
+	{
+		for (int tick = 0; tick < legacyTicks; tick++)
+		{
+			cDC->desiredRot.x = ((zoom->angle[1] * (s32)cDC->desiredRot.x) + ((0x100 - (s32)zoom->angle[1]) * (s32)d->rotCurr.z)) >> 8;
+		}
+	}
 
 
 	state = d->kartState;
@@ -1410,8 +1423,11 @@ void CAM_FollowDriver_Normal(struct CameraDC *cDC, struct Driver *d, SVec3 *push
 	LAB_8001a8c0:
 
 		// if frame countdown is not finished
-		if (cDC->BlastedLerp.framesRemaining != 0)
+		if ((cDC->BlastedLerp.framesRemaining != 0) && (legacyTicks > 0))
 		{
+			// This correction and its countdown must advance on the same clock.
+			// Previously the countdown was 30 Hz but the correction was applied at
+			// 200 Hz, which could leave the camera displaced after specific actions.
 			cam->pos.x += (cDC->BlastedLerp.desiredPos.x * cDC->BlastedLerp.framesRemaining) >> 3;
 			cam->pos.y += (cDC->BlastedLerp.desiredPos.y * cDC->BlastedLerp.framesRemaining) >> 3;
 			cam->pos.z += (cDC->BlastedLerp.desiredPos.z * cDC->BlastedLerp.framesRemaining) >> 3;
@@ -1420,8 +1436,8 @@ void CAM_FollowDriver_Normal(struct CameraDC *cDC, struct Driver *d, SVec3 *push
 			cam->delta.y += (cDC->BlastedLerp.desiredRot.y * cDC->BlastedLerp.framesRemaining) >> 3;
 			cam->delta.z += (cDC->BlastedLerp.desiredRot.z * cDC->BlastedLerp.framesRemaining) >> 3;
 
-			// decrease frame countdown
-			cDC->BlastedLerp.framesRemaining--;
+			int value = cDC->BlastedLerp.framesRemaining - legacyTicks;
+			cDC->BlastedLerp.framesRemaining = (value > 0) ? value : 0;
 		}
 	}
 
@@ -1466,7 +1482,11 @@ void CAM_FollowDriver_Normal(struct CameraDC *cDC, struct Driver *d, SVec3 *push
 
 			    ((8 - x) * cam->pos.y + x * ((s32)cDC->heightSmoothing.startOffset + CTR_MipsSra(d->posCurr.y, 8))) >> 3;
 
-			cDC->heightSmoothing.framesRemaining += -1;
+			if (legacyTicks > 0)
+			{
+				int value = cDC->heightSmoothing.framesRemaining - legacyTicks;
+				cDC->heightSmoothing.framesRemaining = (value > 0) ? value : 0;
+			}
 		}
 	}
 	cDC->heightSmoothing.currentOffset = (s16)cam->pos.y - CTR_MipsSra(d->posCurr.y, 8);
@@ -1485,7 +1505,10 @@ LAB_8001ab04:
 
 	if (d->kartState == KS_MASK_GRABBED)
 	{
-		pb->rot.z -= (pb->rot.z >> 3);
+		if (legacyTicks > 0)
+		{
+			pb->rot.z -= (pb->rot.z >> 3);
+		}
 
 		// camera dirX, cameraPosX minus driverPosX
 		cam->dir.x = (s32)pb->pos.x - CTR_MipsSra(d->posCurr.x, 8);
@@ -1496,9 +1519,9 @@ LAB_8001ab04:
 		// camera dirZ, cameraPosZ minus driverPosZ
 		cam->dir.z = (s32)pb->pos.z - CTR_MipsSra(d->posCurr.z, 8);
 
-		if (pb->rot.x < 0x800)
+		if ((pb->rot.x < 0x800) && (legacyTicks > 0))
 		{
-			pb->rot.x += 0x10;
+			pb->rot.x += 0x10 * legacyTicks;
 			if (pb->rot.x > 0x800)
 			{
 				pb->rot.x = 0x800;
@@ -1533,42 +1556,47 @@ LAB_8001ab04:
 	cam->posCopy.y = cam->pos.y - (s32)pb->pos.y;
 	cam->posCopy.z = cam->pos.z - (s32)pb->pos.z;
 
-	cDC->pushBufferPosCorrection.x -= (cam->pos.x - cDC->cameraPos.x);
-	cDC->pushBufferPosCorrection.y -= (cam->pos.y - cDC->cameraPos.y);
-	cDC->pushBufferPosCorrection.z -= (cam->pos.z - cDC->cameraPos.z);
+	int pushCorrectionX = 0;
+	int pushCorrectionY = 0;
+	int pushCorrectionZ = 0;
 
-	if (cDC->pushBufferPosCorrection.x > 2)
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode())
 	{
-		cDC->pushBufferPosCorrection.x = 2;
+		// This PS1 integer rounding compensator is stateful and can settle at
+		// either -2 or +2 after reverse camera, impacts and other transitions.
+		// At high refresh that becomes a persistent visible lateral offset.
+		// Native subpixel rendering no longer needs the compensator.
+		cDC->pushBufferPosCorrection.x = 0;
+		cDC->pushBufferPosCorrection.y = 0;
+		cDC->pushBufferPosCorrection.z = 0;
 	}
-	if (cDC->pushBufferPosCorrection.y > 2)
+	else
+#endif
+	if (legacyTicks > 0)
 	{
-		cDC->pushBufferPosCorrection.y = 2;
-	}
-	if (cDC->pushBufferPosCorrection.z > 2)
-	{
-		cDC->pushBufferPosCorrection.z = 2;
-	}
+		cDC->pushBufferPosCorrection.x -= (cam->pos.x - cDC->cameraPos.x);
+		cDC->pushBufferPosCorrection.y -= (cam->pos.y - cDC->cameraPos.y);
+		cDC->pushBufferPosCorrection.z -= (cam->pos.z - cDC->cameraPos.z);
 
-	if (cDC->pushBufferPosCorrection.x < -2)
-	{
-		cDC->pushBufferPosCorrection.x = -2;
-	}
-	if (cDC->pushBufferPosCorrection.y < -2)
-	{
-		cDC->pushBufferPosCorrection.y = -2;
-	}
-	if (cDC->pushBufferPosCorrection.z < -2)
-	{
-		cDC->pushBufferPosCorrection.z = -2;
+		if (cDC->pushBufferPosCorrection.x > 2) cDC->pushBufferPosCorrection.x = 2;
+		if (cDC->pushBufferPosCorrection.y > 2) cDC->pushBufferPosCorrection.y = 2;
+		if (cDC->pushBufferPosCorrection.z > 2) cDC->pushBufferPosCorrection.z = 2;
+		if (cDC->pushBufferPosCorrection.x < -2) cDC->pushBufferPosCorrection.x = -2;
+		if (cDC->pushBufferPosCorrection.y < -2) cDC->pushBufferPosCorrection.y = -2;
+		if (cDC->pushBufferPosCorrection.z < -2) cDC->pushBufferPosCorrection.z = -2;
+
+		pushCorrectionX = cDC->pushBufferPosCorrection.x;
+		pushCorrectionY = cDC->pushBufferPosCorrection.y;
+		pushCorrectionZ = cDC->pushBufferPosCorrection.z;
 	}
 
 	if (d->kartState != KS_MASK_GRABBED)
 	{
 		// pushBuffer position
-		pb->pos.x += (s16)cam->posCopy.x + cDC->pushBufferPosCorrection.x;
-		pb->pos.y += (s16)cam->posCopy.y + cDC->pushBufferPosCorrection.y;
-		pb->pos.z += (s16)cam->posCopy.z + cDC->pushBufferPosCorrection.z;
+		pb->pos.x += (s16)cam->posCopy.x + pushCorrectionX;
+		pb->pos.y += (s16)cam->posCopy.y + pushCorrectionY;
+		pb->pos.z += (s16)cam->posCopy.z + pushCorrectionZ;
 	}
 
 	cDC->cameraPos.x = cam->pos.x;
@@ -1732,7 +1760,7 @@ LAB_8001ab04:
 			// |= 0x800, stop transitioning away from player,
 			// sit stationary away from player, wait before moving back
 
-			cDC->transitionFrame++;
+			cDC->transitionFrame += legacyTicks;
 			if (cDC->transitionFrame > cDC->transitionFrameCount)
 			{
 				cDC->transitionFrame = cDC->transitionFrameCount;
@@ -1766,7 +1794,7 @@ LAB_8001ab04:
 
 	CountdownTransitionFrame:
 
-		cDC->transitionFrame--;
+		cDC->transitionFrame -= legacyTicks;
 		if (cDC->transitionFrame < 0)
 		{
 			// This is normally not here,

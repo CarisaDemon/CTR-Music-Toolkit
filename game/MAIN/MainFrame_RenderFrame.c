@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "platform/native_log.h"
+#endif
+
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 #include <platform/native_perf.h>
 #define MAINFRAME_PERF_BEGIN(bucket) NativePerf_BeginScope(bucket)
@@ -215,8 +219,15 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 		int fps = Platform_GetDisplayFPS();
 		if (fps > 0)
 		{
-			char fpsText[24];
-			snprintf(fpsText, sizeof(fpsText), "FPS: %d", fps);
+			char fpsText[48];
+			if (Platform_GetHighRefreshMode())
+			{
+				snprintf(fpsText, sizeof(fpsText), "FPS: %d / %d", fps, Platform_GetHighRefreshTargetFPS());
+			}
+			else
+			{
+				snprintf(fpsText, sizeof(fpsText), "FPS: %d", fps);
+			}
 			DecalFont_DrawLine(fpsText, 8, 2, FONT_SMALL, WHITE);
 		}
 	}
@@ -1234,6 +1245,29 @@ void RenderVSYNC(struct GameTracker *gGT)
 {
 	gGT->clockDurationStall = Timer_GetTime_Total();
 
+#ifdef CTR_NATIVE
+	if (Platform_GetHighRefreshMode())
+	{
+		static int s_loggedDisplayRateBranch = 0;
+		if (!s_loggedDisplayRateBranch)
+		{
+			s_loggedDisplayRateBranch = 1;
+			Platform_Log("[CTR Native] V70: DISPLAY-RATE RenderVSYNC branch entered\n");
+		}
+
+		// Real high-refresh mode: wait only for the previous native draw to
+		// finish, then pace the actual game/render loop to the active display
+		// refresh rate. Do not wait for two 60 Hz VBlanks as retail does.
+		while (gGT->bool_DrawOTag_InProgress != 0)
+		{
+			DrawSync(0);
+			Platform_PollHostEvents();
+		}
+		Platform_WaitForHighRefreshFrame();
+		return;
+	}
+#endif
+
 	// render checkered flag
 	if ((gGT->renderFlags & RENDER_FLAG_CHECKERED_FLAG) != 0)
 	{
@@ -1304,7 +1338,7 @@ void RenderSubmit(struct GameTracker *gGT)
 
 #if defined(CTR_NATIVE)
 
-	sdata->vsyncTillFlip = 2;
+	sdata->vsyncTillFlip = Platform_GetHighRefreshMode() ? 0 : 2;
 
 	// Native still renders immediately through PsyCross, so keep the host GPU's
 	// active draw/display envs in step with the retail DB selected this frame.

@@ -143,6 +143,10 @@ void RB_CrateAny_ThTick_Grow(struct Thread *t)
 	struct Instance *crateInst;
 	struct Crate *crateObj;
 	int modelID;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	crateInst = t->inst;
 	crateObj = (struct Crate *)t->object;
@@ -159,10 +163,11 @@ void RB_CrateAny_ThTick_Grow(struct Thread *t)
 	{
 		// if cooldown not paused,
 		// (no driver or mine, sitting in the way)
-		if (crateObj->boolPauseCooldown == 0)
+		if ((crateObj->boolPauseCooldown == 0) && (legacyTicks > 0))
 		{
-			// reduce cooldown
-			crateObj->cooldown--;
+			// reduce retail-frame cooldown
+			int value = crateObj->cooldown - legacyTicks;
+			crateObj->cooldown = (value > 0) ? value : 0;
 		}
 
 		// dont procede until cooldown is done
@@ -173,9 +178,13 @@ void RB_CrateAny_ThTick_Grow(struct Thread *t)
 
 	if (crateInst->scale.x < 0x1000)
 	{
-		crateInst->scale.x += 0x100;
-		crateInst->scale.y += 0x100;
-		crateInst->scale.z += 0x100;
+		const int growStep = 0x100 * legacyTicks;
+		crateInst->scale.x += growStep;
+		crateInst->scale.y += growStep;
+		crateInst->scale.z += growStep;
+		if (crateInst->scale.x > 0x1000) crateInst->scale.x = 0x1000;
+		if (crateInst->scale.y > 0x1000) crateInst->scale.y = 0x1000;
+		if (crateInst->scale.z > 0x1000) crateInst->scale.z = 0x1000;
 	}
 	else
 	{

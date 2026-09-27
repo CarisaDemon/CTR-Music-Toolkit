@@ -315,8 +315,20 @@ u32 main(void)
 				gGT->trafficLightsTimer = 0xfffffc40;
 			}
 
-			// frame counter, not represented in common.h currently
+			// Retail frameCounter is a 30 Hz content clock, not the number of host
+			// updates. Native high-refresh advances it after the real-time clock is
+			// sampled in MainFrame_GameLogic.
+#if !defined(CTR_NATIVE)
 			sdata->frameCounter++;
+#endif
+
+#ifdef CTR_NATIVE
+			// Begin native per-frame sidecars before any game logic/render work.
+			// Some systems project/build primitives during logic, so starting the
+			// subpixel generation only immediately before RenderFrame discarded
+			// valid GTE fractional coordinates from earlier in this same frame.
+			Platform_BeginFrame();
+#endif
 
 			// Process all gamepad input
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
@@ -356,7 +368,14 @@ u32 main(void)
 				// To see 30-second timer in Main Menu, go to FUN_00001604 in 230.c
 				// pressing (or holding) any button sets it to zero
 
+#if defined(CTR_NATIVE)
+				{
+					int value = gGT->demoCountdownTimer - Platform_GetLegacy30HzTicks();
+					gGT->demoCountdownTimer = (value > 0) ? value : 0;
+				}
+#else
 				gGT->demoCountdownTimer--;
+#endif
 
 				// check to see if time ran out
 				if (gGT->demoCountdownTimer < 1)
@@ -409,6 +428,9 @@ u32 main(void)
 				NativePerf_EndScope(NATIVE_PERF_BUCKET_GAME_LOGIC);
 #endif
 			}
+#if defined(CTR_NATIVE)
+			sdata->frameCounter += Platform_GetLegacy30HzTicks();
+#endif
 
 			// If you are in demo mode
 			if (gGT->boolDemoMode != '\0')
@@ -421,9 +443,6 @@ u32 main(void)
 			gGT->vSync_between_drawSync = 0;
 
 
-#ifdef CTR_NATIVE
-			Platform_BeginFrame();
-#endif
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 			NativePerf_BeginScope(NATIVE_PERF_BUCKET_RENDER_FRAME);
 #endif

@@ -123,17 +123,20 @@ void RB_GenericMine_ThTick(struct Thread *t)
 
 	numFrames = (int)INSTANCE_GetNumAnimFrames(inst, 0);
 
-	// if animation is not over
-	if (inst->animFrame < numFrames - 1)
+	// Animation frames are authored at the retail content rate; physics below
+	// continues to use real elapsed time on every host update.
+#if defined(CTR_NATIVE)
+	if (Platform_GetLegacy30HzTicks() > 0)
+#endif
 	{
-		// increment animation frame
-		inst->animFrame++;
-	}
-	// if animation is over
-	else
-	{
-		// restart animation
-		inst->animFrame = 0;
+		if (inst->animFrame < numFrames - 1)
+		{
+			inst->animFrame++;
+		}
+		else
+		{
+			inst->animFrame = 0;
+		}
 	}
 
 	// increment posY by velY * time

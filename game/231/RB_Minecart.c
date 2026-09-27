@@ -55,6 +55,10 @@ void RB_Minecart_NewPoint(struct Instance *minecartInst, struct Minecart *mineca
 
 void RB_Minecart_ThTick(struct Thread *t)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+		return;
+#endif
 	struct Instance *minecartInst;
 	struct Minecart *minecartObj;
 	struct Level *level;

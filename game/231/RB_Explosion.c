@@ -4,6 +4,13 @@
 void RB_Explosion_ThTick(struct Thread *t)
 {
 	struct Instance *inst = t->inst;
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+	{
+		ThTick_FastRET(t);
+		return;
+	}
+#endif
 
 	int frame = inst->animFrame;
 	int total = INSTANCE_GetNumAnimFrames(inst, 0);

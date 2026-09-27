@@ -97,6 +97,10 @@ int RB_Seal_ThCollide(struct Thread *sealThread, struct Thread *driverTh, void *
 
 void RB_Seal_ThTick_TurnAround(struct Thread *t)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+		return;
+#endif
 	struct Instance *sealInst;
 	struct Seal *sealObj;
 
@@ -158,6 +162,10 @@ void RB_Seal_ThTick_TurnAround(struct Thread *t)
 
 void RB_Seal_ThTick_Move(struct Thread *t)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+		return;
+#endif
 	struct Instance *sealInst;
 	struct Seal *sealObj;
 	int i;

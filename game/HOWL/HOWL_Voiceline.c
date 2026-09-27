@@ -336,6 +336,14 @@ void Voiceline_StartPlay(struct Item *voiceLine)
 void Voiceline_Update(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+	if (Platform_GetHighRefreshMode() && (legacyTicks == 0))
+	{
+		return;
+	}
+#endif
 
 	if (sdata->boolCanPlayVoicelines == 0)
 	{
@@ -344,7 +352,8 @@ void Voiceline_Update(void)
 
 	if (sdata->voicelineCooldown != 0)
 	{
-		sdata->voicelineCooldown = (s16)CTR_MipsSubLo((u16)sdata->voicelineCooldown, 1);
+		int nextCooldown = CTR_MipsSubLo((u16)sdata->voicelineCooldown, legacyTicks);
+		sdata->voicelineCooldown = (s16)((nextCooldown > 0) ? nextCooldown : 0);
 		if (sdata->voicelineCooldown != 0)
 		{
 			return;

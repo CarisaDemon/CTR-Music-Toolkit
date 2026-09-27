@@ -116,7 +116,13 @@ void MM_TrackSelect_Video_State(b32 resetPreview)
 		// wait before starting the preview video
 		if (D230.trackSelect.videoPreviewFrames < MM_TRACK_VIDEO_PREVIEW_WAIT_FRAMES)
 		{
+#if defined(CTR_NATIVE)
+			D230.trackSelect.videoPreviewFrames += Platform_GetLegacy30HzTicks();
+#else
 			D230.trackSelect.videoPreviewFrames++;
+#endif
+			if (D230.trackSelect.videoPreviewFrames > MM_TRACK_VIDEO_PREVIEW_WAIT_FRAMES)
+				D230.trackSelect.videoPreviewFrames = MM_TRACK_VIDEO_PREVIEW_WAIT_FRAMES;
 		}
 		else
 		{
@@ -195,7 +201,13 @@ void MM_TrackSelect_Video_Draw(RECT *r, struct MainMenu_LevelRow *selectMenu, in
 			u8 v0 = gGT->ptrIcons[MM_TRACK_VIDEO_ICON_INDEX]->texLayout.v0;
 			int srcX = (u16)u0 + (tpage & 0xf) * 0x40;
 			int srcY = (u16)v0 + (tpage & 0x10) * 0x10 + (s16)(((u32)tpage & 0x800) >> 2);
-			int uploaded = NativeSTR_UploadNextFrame(srcX, srcY);
+			int uploaded = 0;
+			// STR previews are authored for the retail content cadence. Decoding
+			// one frame on every host update makes them 6.67x too fast at 200 Hz.
+			if (Platform_GetLegacy30HzTicks() > 0)
+			{
+				uploaded = NativeSTR_UploadNextFrame(srcX, srcY);
+			}
 
 			if ((uploaded == 1) && (D230.trackSelect.videoStateCurr == MM_TRACK_VIDEO_START_STREAM))
 			{
@@ -401,6 +413,10 @@ void MM_TrackSelect_Init(void)
 void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 {
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 	s16 elapsedFrames = D230.trackSelect.transition.frame;
 
 	// NOTE(aalhendi): ASM-verified NTSC-U 926 overlay 230 0x800b00d4-0x800b02b0.
@@ -430,16 +446,17 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 				// menu is now in focus
 				D230.trackSelect.transition.state = IN_MENU;
 			}
-			else
+			else if (legacyTicks > 0)
 			{
-				elapsedFrames--;
+				elapsedFrames -= legacyTicks;
+				if (elapsedFrames < 0) elapsedFrames = 0;
 			}
 		}
 		// transitioning out
 		else if (D230.trackSelect.transition.state == EXITING_MENU)
 		{
 			MM_TransitionInOut(D230.transitionMeta_trackSel, elapsedFrames, MM_TRACK_SELECT_SLIDE_FRAMES);
-			elapsedFrames++;
+			elapsedFrames += legacyTicks;
 
 			if (elapsedFrames > MM_TRACK_SELECT_TRANSITION_FRAMES)
 			{
@@ -669,11 +686,25 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 		}
 	}
 
-	// decrease frame from track list motion
-	int trackChangeFrames = D230.trackSelect.trackChangeFrames + -1;
-	if ((0 < D230.trackSelect.trackChangeFrames) && (D230.trackSelect.trackChangeFrames = trackChangeFrames, trackChangeFrames == 0))
+	// decrease frame from track list motion on the retail content clock
+	int trackChangeFrames = D230.trackSelect.trackChangeFrames;
+	if (trackChangeFrames > 0)
 	{
-		menu->rowSelected = D230.trackSelect.currentTrack;
+#if defined(CTR_NATIVE)
+		int ticks = Platform_GetLegacy30HzTicks();
+#else
+		int ticks = 1;
+#endif
+		if (ticks > 0)
+		{
+			trackChangeFrames -= ticks;
+			if (trackChangeFrames < 0) trackChangeFrames = 0;
+			D230.trackSelect.trackChangeFrames = trackChangeFrames;
+			if (trackChangeFrames == 0)
+			{
+				menu->rowSelected = D230.trackSelect.currentTrack;
+			}
+		}
 	}
 
 	// not transitioning

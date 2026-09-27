@@ -582,7 +582,18 @@ void VehPhysForce_OnApplyForces(struct Thread *thread, struct Driver *driver)
 	to find the "true" center of the 3D model */
 	driver->originToCenter = VehPhysForce_OnApplyForces_RotateVector(&driver->matrixFacingDir, 0, 25, 0);
 
+#if defined(CTR_NATIVE)
+	// At high refresh, repeatedly rebuilding velocity from the quantized PS1
+	// scalar speed 200 times/sec destroys more precision than retail's 30 Hz
+	// path. Keep the full vector between retail ticks; all continuous forces
+	// below still integrate every host frame using elapsedTimeMS.
+	if (!Platform_GetHighRefreshMode() || (Platform_GetLegacy30HzTicks() > 0))
+	{
+		VehPhysForce_ConvertSpeedToVecOut(driver, &driver->velocity);
+	}
+#else
 	VehPhysForce_ConvertSpeedToVecOut(driver, &driver->velocity);
+#endif
 
 	if ((driver->underDriver) && (driver->underDriver->terrain_type == TERRAIN_MUD))
 	{
@@ -753,6 +764,12 @@ static void VehPhysForce_TranslateMatrix_ResetMatrixAnim(struct Driver *d)
 
 static void VehPhysForce_TranslateMatrix_UpdateSquashStretch(struct Instance *inst, struct Driver *d)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && Platform_GetLegacy30HzTicks() == 0)
+	{
+		return;
+	}
+#endif
 	if (d->kartState == KS_WARP_PAD)
 	{
 		return;
@@ -869,6 +886,12 @@ static void VehPhysForce_TranslateMatrix_UpdateSquashStretch(struct Instance *in
 
 static void VehPhysForce_TranslateMatrix_UpdateMatrixAnimation(struct Driver *d)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && Platform_GetLegacy30HzTicks() == 0)
+	{
+		return;
+	}
+#endif
 	if ((d->reserves == 0) || (d->fireSpeed < d->const_Speed_ClassStat) || ((d->actionsFlagSet & ACTION_TURBO_INPUT_LATCH) != 0))
 	{
 		if (d->matrixArray == BAKED_GTE_MATRIX_WHEELIE_HOLD)

@@ -84,6 +84,7 @@ s32 MFC2_S(s32 reg)
 
 void MTC2(u32 value, s32 reg)
 {
+	NativeGTE_WriteSXYRegister(value,reg);
 	switch (reg)
 	{
 	case 15:
@@ -111,6 +112,7 @@ void MTC2(u32 value, s32 reg)
 
 void MTC2_S(s32 value, s32 reg)
 {
+	NativeGTE_WriteSXYRegister((u32)value,reg);
 	switch (reg)
 	{
 	case 15:

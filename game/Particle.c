@@ -537,8 +537,19 @@ void Particle_UpdateAllParticles(void)
 		return;
 	}
 
-	Particle_UpdateList(&gGT->particleList_ordinary, gGT->particleList_ordinary);
-	Particle_UpdateList(&gGT->particleList_heatWarp, gGT->particleList_heatWarp);
+	int ticks = 1;
+#if defined(CTR_NATIVE)
+	ticks = Platform_GetLegacy30HzTicks();
+#endif
+
+	// Particle axis velocity, acceleration, lifetime and icon animation are all
+	// authored in retail frames. Updating the lists at the host refresh rate made
+	// smoke, exhaust flames and every particle animation run 6.67x fast at 200 Hz.
+	for (int i = 0; i < ticks; i++)
+	{
+		Particle_UpdateList(&gGT->particleList_ordinary, gGT->particleList_ordinary);
+		Particle_UpdateList(&gGT->particleList_heatWarp, gGT->particleList_heatWarp);
+	}
 }
 
 

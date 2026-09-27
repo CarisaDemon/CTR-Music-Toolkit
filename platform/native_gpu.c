@@ -23,8 +23,10 @@
 
 void Platform_PollHostEvents(void);
 extern int g_cfg_bilinearFiltering;
+extern int g_cfg_subpixelGeometry;
 extern int g_dbg_emulatorPaused;
 extern int g_dbg_polygonSelected;
+int NativeGTE_GetStoredSubpixel(const void *address, u32 packedSxy, float *x, float *y);
 
 #define NATIVE_GPU_LOG(fmt, ...)   Platform_Log("[CTR GPU] " fmt, ##__VA_ARGS__)
 #define NATIVE_GPU_ERROR(fmt, ...) Platform_LogError("[CTR GPU] [%s] - " fmt, __func__, ##__VA_ARGS__)
@@ -84,13 +86,13 @@ typedef struct
 	bool psxTextureOutputSTP;
 	bool psxDrawMaskSet;
 
-	u16 startVertex;
-	u16 numVerts;
+	u32 startVertex;
+	u32 numVerts;
 
 	const char *debugText;
 } GPUDrawSplit;
 
-#define MAX_DRAW_SPLITS 4096
+#define MAX_DRAW_SPLITS 16384
 
 typedef struct
 {
@@ -111,6 +113,72 @@ typedef struct
 
 global_variable NativeGpuState s_gpu;
 
+global_variable u64 s_subpixelPrimitiveAccepted = 0;
+global_variable u64 s_subpixelPrimitiveFallback = 0;
+global_variable int s_subpixelStatsLogged1000 = 0;
+
+void NativeGpu_ResetSubpixelStats(void)
+{
+	s_subpixelPrimitiveAccepted = 0;
+	s_subpixelPrimitiveFallback = 0;
+	s_subpixelStatsLogged1000 = 0;
+}
+
+internal void NativeGpu_RecordSubpixelPrimitive(int complete)
+{
+	if (complete)
+	{
+		s_subpixelPrimitiveAccepted++;
+	}
+	else
+	{
+		s_subpixelPrimitiveFallback++;
+	}
+
+	if (!s_subpixelStatsLogged1000 &&
+	    (s_subpixelPrimitiveAccepted + s_subpixelPrimitiveFallback >= 1000))
+	{
+		s_subpixelStatsLogged1000 = 1;
+		NATIVE_GPU_LOG("V70 subpixel first 1000+ primitives: complete=%llu fallback=%llu\n",
+		               (unsigned long long)s_subpixelPrimitiveAccepted,
+		               (unsigned long long)s_subpixelPrimitiveFallback);
+	}
+}
+
+void NativeGpu_LogSubpixelStats(void)
+{
+	if ((s_subpixelPrimitiveAccepted + s_subpixelPrimitiveFallback) == 0)
+	{
+		return;
+	}
+	NATIVE_GPU_LOG("V70 subpixel final primitives: complete=%llu fallback=%llu\n",
+	               (unsigned long long)s_subpixelPrimitiveAccepted,
+	               (unsigned long long)s_subpixelPrimitiveFallback);
+}
+
+// Presentation history used by optional native redraw/interpolation paths.
+// The normal high-refresh path runs the real game/render loop at display rate;
+// these snapshots must therefore never be treated as the simulation clock.
+typedef struct
+{
+	GrVertex vertices[MAX_VERTEX_BUFFER_SIZE];
+	GPUDrawSplit splits[MAX_DRAW_SPLITS];
+	int vertexCount;
+	int splitCount;
+	int valid;
+	int unsafeFramebufferFeedback;
+	u32 serial;
+	DRAWENV clearDrawEnv;
+	int haveClearDrawEnv;
+} NativeGpuPresentationFrame;
+
+global_variable NativeGpuPresentationFrame s_presentFrames[2];
+global_variable GrVertex s_presentInterpolatedVertices[MAX_VERTEX_BUFFER_SIZE];
+global_variable int s_presentCurrentFrame = -1;
+global_variable int s_presentWriteFrame = 0;
+global_variable int s_presentCaptureActive = 0;
+global_variable u32 s_presentSerial = 0;
+
 struct NativeGpuSnapshot
 {
 	u32 magic;
@@ -126,6 +194,104 @@ struct NativeGpuSnapshot
 int NativeGpu_HasPendingSplits(void)
 {
 	return s_gpu.splitIndex > 0;
+}
+
+void NativeGpu_PresentationReset(void)
+{
+	memset(s_presentFrames, 0, sizeof(s_presentFrames));
+	s_presentCurrentFrame = -1;
+	s_presentWriteFrame = 0;
+	s_presentCaptureActive = 0;
+	s_presentSerial = 0;
+}
+
+void NativeGpu_PresentationBeginFrame(void)
+{
+	NativeGpuPresentationFrame *frame;
+
+	s_presentWriteFrame = (s_presentCurrentFrame >= 0) ? (s_presentCurrentFrame ^ 1) : 0;
+	frame = &s_presentFrames[s_presentWriteFrame];
+	frame->vertexCount = 0;
+	frame->splitCount = 0;
+	frame->valid = 0;
+	frame->unsafeFramebufferFeedback = 0;
+	frame->serial = 0;
+	frame->haveClearDrawEnv = 0;
+	s_presentCaptureActive = 1;
+}
+
+void NativeGpu_PresentationEndFrame(void)
+{
+	NativeGpuPresentationFrame *frame;
+
+	if (!s_presentCaptureActive)
+	{
+		return;
+	}
+
+	frame = &s_presentFrames[s_presentWriteFrame];
+	s_presentCaptureActive = 0;
+
+	// Advance presentation history even for empty/movie/loading frames. That
+	// prevents the next normal frame from interpolating against stale geometry
+	// from before a transition.
+	s_presentSerial++;
+	if (s_presentSerial == 0)
+	{
+		s_presentSerial = 1;
+	}
+	frame->serial = s_presentSerial;
+	frame->valid = (frame->vertexCount > 0) && (frame->splitCount > 0);
+	s_presentCurrentFrame = s_presentWriteFrame;
+}
+
+internal void NativeGpu_PresentationAppendCurrentBatch(void)
+{
+	NativeGpuPresentationFrame *frame;
+	int baseVertex;
+
+	if (!s_presentCaptureActive || (s_gpu.vertexIndex <= 0) || (s_gpu.splitIndex <= 0))
+	{
+		return;
+	}
+
+	frame = &s_presentFrames[s_presentWriteFrame];
+	baseVertex = frame->vertexCount;
+	if ((baseVertex + s_gpu.vertexIndex > (int)MAX_VERTEX_BUFFER_SIZE) ||
+	    (frame->splitCount + s_gpu.splitIndex >= MAX_DRAW_SPLITS))
+	{
+		frame->valid = 0;
+		frame->unsafeFramebufferFeedback = 1;
+		frame->vertexCount = 0;
+		frame->splitCount = 0;
+		s_presentCaptureActive = 0;
+		return;
+	}
+
+	memcpy(&frame->vertices[baseVertex], s_gpu.vertexBuffer,
+	       (size_t)s_gpu.vertexIndex * sizeof(GrVertex));
+
+	if (!frame->haveClearDrawEnv)
+	{
+		frame->clearDrawEnv = s_gpu.splits[1].drawenv;
+		frame->haveClearDrawEnv = 1;
+	}
+
+	for (int i = 1; i <= s_gpu.splitIndex; i++)
+	{
+		GPUDrawSplit *dst = &frame->splits[++frame->splitCount];
+		*dst = s_gpu.splits[i];
+		dst->startVertex += (u32)baseVertex;
+		// Debug labels are not part of the visual state and may point at
+		// transient caller-owned strings. Do not retain them across host frames.
+		dst->debugText = NULL;
+	}
+
+	frame->vertexCount += s_gpu.vertexIndex;
+	if (s_gpu.framebufferFeedbackRunActive)
+	{
+		frame->unsafeFramebufferFeedback = 1;
+	}
 }
 
 void ClearSplits(void)
@@ -241,6 +407,21 @@ void DrawEnvOffset(float *ofsX, float *ofsY)
 	}
 }
 
+internal void NativeGpu_PresentationEncodeAxis(float value, s16 *baseOut, s8 *fracOut);
+internal int GetVertexSubpixelPosition(VERTTYPE *position, float *x, float *y)
+{
+	u32 packed=(u32)(u16)position[0]|((u32)(u16)position[1]<<16);
+	return g_cfg_subpixelGeometry && NativeGTE_GetStoredSubpixel(position,packed,x,y);
+}
+
+internal void MakeVertexPosition(GrVertex *vertex, VERTTYPE *position, float ofsX, float ofsY)
+{
+	vertex->x = position[0] + ofsX;
+	vertex->y = position[1] + ofsY;
+	vertex->_p0 = 0;
+	vertex->_p1 = 0;
+}
+
 void LineSwapSourceVerts(VERTTYPE **p0, VERTTYPE **p1, u8 **c0, u8 **c1)
 {
 	// swap line coordinates for left-to-right and up-to-bottom direction
@@ -307,14 +488,28 @@ void MakeVertexTriangle(GrVertex *vertex, VERTTYPE *p0, VERTTYPE *p1, VERTTYPE *
 
 	memset(vertex, 0, sizeof(GrVertex) * 3);
 
-	vertex[0].x = p0[0] + ofsX;
-	vertex[0].y = p0[1] + ofsY;
+	MakeVertexPosition(&vertex[0], p0, ofsX, ofsY);
+	MakeVertexPosition(&vertex[1], p1, ofsX, ofsY);
+	MakeVertexPosition(&vertex[2], p2, ofsX, ofsY);
 
-	vertex[1].x = p1[0] + ofsX;
-	vertex[1].y = p1[1] + ofsY;
-
-	vertex[2].x = p2[0] + ofsX;
-	vertex[2].y = p2[1] + ofsY;
+	// Never mix PS1 integer vertices with native subpixel vertices inside one
+	// primitive. Partial metadata was visibly warping/jittering triangles.
+	if (g_cfg_subpixelGeometry)
+	{
+		float x[3], y[3];
+		if (GetVertexSubpixelPosition(p0, &x[0], &y[0]) &&
+		    GetVertexSubpixelPosition(p1, &x[1], &y[1]) &&
+		    GetVertexSubpixelPosition(p2, &x[2], &y[2]))
+		{
+			for (int i=0;i<3;i++)
+			{
+				NativeGpu_PresentationEncodeAxis(x[i]+ofsX,&vertex[i].x,&vertex[i]._p0);
+				NativeGpu_PresentationEncodeAxis(y[i]+ofsY,&vertex[i].y,&vertex[i]._p1);
+			}
+			NativeGpu_RecordSubpixelPrimitive(1);
+		}
+		else NativeGpu_RecordSubpixelPrimitive(0);
+	}
 }
 
 void MakeVertexQuad(GrVertex *vertex, VERTTYPE *p0, VERTTYPE *p1, VERTTYPE *p2, VERTTYPE *p3)
@@ -329,17 +524,28 @@ void MakeVertexQuad(GrVertex *vertex, VERTTYPE *p0, VERTTYPE *p1, VERTTYPE *p2, 
 
 	memset(vertex, 0, sizeof(GrVertex) * 4);
 
-	vertex[0].x = p0[0] + ofsX;
-	vertex[0].y = p0[1] + ofsY;
+	MakeVertexPosition(&vertex[0], p0, ofsX, ofsY);
+	MakeVertexPosition(&vertex[1], p1, ofsX, ofsY);
+	MakeVertexPosition(&vertex[2], p2, ofsX, ofsY);
+	MakeVertexPosition(&vertex[3], p3, ofsX, ofsY);
 
-	vertex[1].x = p1[0] + ofsX;
-	vertex[1].y = p1[1] + ofsY;
-
-	vertex[2].x = p2[0] + ofsX;
-	vertex[2].y = p2[1] + ofsY;
-
-	vertex[3].x = p3[0] + ofsX;
-	vertex[3].y = p3[1] + ofsY;
+	if (g_cfg_subpixelGeometry)
+	{
+		float x[4], y[4];
+		if (GetVertexSubpixelPosition(p0, &x[0], &y[0]) &&
+		    GetVertexSubpixelPosition(p1, &x[1], &y[1]) &&
+		    GetVertexSubpixelPosition(p2, &x[2], &y[2]) &&
+		    GetVertexSubpixelPosition(p3, &x[3], &y[3]))
+		{
+			for (int i=0;i<4;i++)
+			{
+				NativeGpu_PresentationEncodeAxis(x[i]+ofsX,&vertex[i].x,&vertex[i]._p0);
+				NativeGpu_PresentationEncodeAxis(y[i]+ofsY,&vertex[i].y,&vertex[i]._p1);
+			}
+			NativeGpu_RecordSubpixelPrimitive(1);
+		}
+		else NativeGpu_RecordSubpixelPrimitive(0);
+	}
 }
 
 void MakeVertexRect(GrVertex *vertex, VERTTYPE *p0, s16 w, s16 h)
@@ -793,6 +999,10 @@ internal void NativeGpu_PrepareFramebufferFeedback(int tpage)
 	}
 
 	NativeRenderer_StoreFrameBuffer(activeDrawEnv.clip.x, activeDrawEnv.clip.y, activeDrawEnv.clip.w, activeDrawEnv.clip.h);
+	if (s_presentCaptureActive)
+	{
+		s_presentFrames[s_presentWriteFrame].unsafeFramebufferFeedback = 1;
+	}
 	s_gpu.framebufferFeedbackRunActive = true;
 }
 
@@ -932,6 +1142,164 @@ void DrawSplit(const GPUDrawSplit *split)
 	}
 }
 
+internal int NativeGpu_PresentationSplitCompatible(const GPUDrawSplit *a, const GPUDrawSplit *b)
+{
+	if ((a == NULL) || (b == NULL) || (a->numVerts != b->numVerts))
+	{
+		return 0;
+	}
+	if ((a->blendMode != b->blendMode) || (a->texFormat != b->texFormat) ||
+	    (a->textureId != b->textureId) || (a->drawPrimMode != b->drawPrimMode) ||
+	    (a->psxTexturedSemiTrans != b->psxTexturedSemiTrans) ||
+	    (a->psxTextureOutputSTP != b->psxTextureOutputSTP) ||
+	    (a->psxDrawMaskSet != b->psxDrawMaskSet) ||
+	    (a->drawenv.dfe != b->drawenv.dfe))
+	{
+		return 0;
+	}
+	if ((a->drawenv.clip.w != b->drawenv.clip.w) || (a->drawenv.clip.h != b->drawenv.clip.h))
+	{
+		return 0;
+	}
+	if ((a->dispenv.disp.w != b->dispenv.disp.w) || (a->dispenv.disp.h != b->dispenv.disp.h))
+	{
+		return 0;
+	}
+	return 1;
+}
+
+internal void NativeGpu_PresentationEncodeAxis(float value, s16 *baseOut, s8 *fracOut)
+{
+	int base = (int)value;
+	float fracFloat = (value - (float)base) * 128.0f;
+	int frac = (int)(fracFloat + (fracFloat >= 0.0f ? 0.5f : -0.5f));
+
+	if (frac > 127)
+	{
+		base++;
+		frac -= 128;
+	}
+	else if (frac < -128)
+	{
+		base--;
+		frac += 128;
+	}
+
+	if (base < -32768)
+	{
+		base = -32768;
+		frac = 0;
+	}
+	else if (base > 32767)
+	{
+		base = 32767;
+		frac = 0;
+	}
+
+	*baseOut = (s16)base;
+	*fracOut = (s8)frac;
+}
+
+internal void NativeGpu_PresentationInterpolateVertex(GrVertex *dst, const GrVertex *prev, const GrVertex *curr, float alpha)
+{
+	const float prevX = (float)prev->x + ((float)prev->_p0 * (1.0f / 128.0f));
+	const float prevY = (float)prev->y + ((float)prev->_p1 * (1.0f / 128.0f));
+	const float currX = (float)curr->x + ((float)curr->_p0 * (1.0f / 128.0f));
+	const float currY = (float)curr->y + ((float)curr->_p1 * (1.0f / 128.0f));
+	const float x = prevX + ((currX - prevX) * alpha);
+	const float y = prevY + ((currY - prevY) * alpha);
+
+	*dst = *curr;
+	NativeGpu_PresentationEncodeAxis(x, &dst->x, &dst->_p0);
+	NativeGpu_PresentationEncodeAxis(y, &dst->y, &dst->_p1);
+}
+
+int NativeGpu_PresentationDrawInterpolated(float alpha)
+{
+	NativeGpuPresentationFrame *curr;
+	NativeGpuPresentationFrame *prev;
+	int prevIndex;
+
+	if (s_presentCurrentFrame < 0)
+	{
+		return 0;
+	}
+
+	curr = &s_presentFrames[s_presentCurrentFrame];
+	prevIndex = s_presentCurrentFrame ^ 1;
+	prev = &s_presentFrames[prevIndex];
+
+	if (!curr->valid)
+	{
+		return 0;
+	}
+
+	if (!prev->valid || prev->serial+1 != curr->serial || curr->unsafeFramebufferFeedback || prev->unsafeFramebufferFeedback) alpha=1.0f;
+	if (alpha < 0.0f) alpha = 0.0f;
+	if (alpha > 1.0f) alpha = 1.0f;
+
+	memcpy(s_presentInterpolatedVertices, curr->vertices,
+	       (size_t)curr->vertexCount * sizeof(GrVertex));
+
+	for (int i = 1; alpha < 1.0f && i <= curr->splitCount; i++)
+	{
+		const GPUDrawSplit *currSplit = &curr->splits[i];
+		const GPUDrawSplit *prevSplit;
+
+		if ((i > prev->splitCount) || !currSplit->drawenv.dfe)
+		{
+			continue;
+		}
+
+		prevSplit = &prev->splits[i];
+		if (!NativeGpu_PresentationSplitCompatible(prevSplit, currSplit))
+		{
+			continue;
+		}
+
+		for (u32 j = 0; j+2 < currSplit->numVerts; j+=3)
+		{
+			u32 ci=currSplit->startVertex+j, pi=prevSplit->startVertex+j;
+			if (ci+2 >= (u32)curr->vertexCount || pi+2 >= (u32)prev->vertexCount) break;
+			int match=1;
+			for (int k=0;k<3;k++)
+			{
+				const GrVertex *p=&prev->vertices[pi+k], *c=&curr->vertices[ci+k];
+				// All render attributes must match. Reject a complete triangle if
+				// topology, UV animation, material, color or visibility changed.
+				if (memcmp(&p->page,&c->page,12) || p->tcx!=c->tcx || p->tcy!=c->tcy ||
+				    abs(c->x-p->x)>32 || abs(c->y-p->y)>32) match=0;
+			}
+			if (match) for (int k=0;k<3;k++)
+				NativeGpu_PresentationInterpolateVertex(&s_presentInterpolatedVertices[ci+k], &prev->vertices[pi+k], &curr->vertices[ci+k], alpha);
+		}
+	}
+
+	// Host-only redraw: build a fresh backbuffer from the saved native render
+	// list without running CTR logic or feeding this presentation back into PS1 VRAM.
+	NativeRenderer_BeginScene();
+	if (curr->haveClearDrawEnv && curr->clearDrawEnv.isbg)
+	{
+		NativeRenderer_Clear(curr->clearDrawEnv.clip.x, curr->clearDrawEnv.clip.y,
+		                     curr->clearDrawEnv.clip.w, curr->clearDrawEnv.clip.h,
+		                     curr->clearDrawEnv.r0, curr->clearDrawEnv.g0, curr->clearDrawEnv.b0);
+	}
+
+	NativeRenderer_UpdateVertexBuffer(s_presentInterpolatedVertices, curr->vertexCount);
+	for (int i = 1; i <= curr->splitCount; i++)
+	{
+		// Offscreen passes already produced their textures during the logical
+		// frame. Replaying them here would mutate renderer resources used by CTR.
+		if (curr->splits[i].drawenv.dfe)
+		{
+			DrawSplit(&curr->splits[i]);
+		}
+	}
+	NativeRenderer_EndScene();
+	NativeRenderer_DiscardFramebufferReadback();
+	return 1;
+}
+
 internal void SetPSXMaskState(u32 code)
 {
 	s_gpu.psxDrawMaskSet = (code & 1) != 0;
@@ -965,6 +1333,10 @@ void DrawAllSplits()
 		Platform_PollHostEvents();
 	}
 #endif
+
+	// Preserve this complete batch for host-only high-refresh interpolation
+	// before the live GPU state is cleared below.
+	NativeGpu_PresentationAppendCurrentBatch();
 
 	// next code ideally should be called before EndScene
 	NativeRenderer_UpdateVertexBuffer(s_gpu.vertexBuffer, s_gpu.vertexIndex);

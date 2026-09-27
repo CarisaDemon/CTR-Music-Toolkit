@@ -111,6 +111,10 @@ void UI_DrawRankedDrivers(void)
 	u32 damageColor;
 
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 	int numPlyr = gGT->numPlyrCurrGame;
 
 	if (numPlyr == 1)
@@ -249,7 +253,7 @@ void UI_DrawRankedDrivers(void)
 
 				if (isTransitioning)
 				{
-					transitionTimer[0]++;
+					transitionTimer[0] += legacyTicks;
 
 					if (*transitionTimer >= UI_RANK_TRANSITION_FRAMES)
 					{
@@ -301,6 +305,13 @@ void UI_DrawRankedDrivers(void)
 				{
 					goto TrackIconAtStart;
 				}
+			}
+
+			// The multiplayer rank strip is a retail-frame smoothing animation.
+			// Hold its state on extra host-refresh updates.
+			if (legacyTicks <= 0)
+			{
+				targetTrackX = currentTrackX;
 			}
 
 			// posX

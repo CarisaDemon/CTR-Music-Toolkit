@@ -221,7 +221,17 @@ void NativeRenderer_Shutdown(void)
 
 void NativeRenderer_UpdateSwapIntervalState(int swapInterval)
 {
-	SDL_GL_SetSwapInterval(swapInterval);
+	static int s_lastLoggedSwapInterval = 0x7fffffff;
+	const bool setOk = SDL_GL_SetSwapInterval(swapInterval);
+	int effectiveInterval = 0;
+	const bool getOk = SDL_GL_GetSwapInterval(&effectiveInterval);
+
+	if (s_lastLoggedSwapInterval != swapInterval)
+	{
+		Platform_Log("[CTR Renderer] V70 swap interval request=%d set=%s effective=%d query=%s\n",
+		             swapInterval, setOk ? "OK" : "FAIL", effectiveInterval, getOk ? "OK" : "FAIL");
+		s_lastLoggedSwapInterval = swapInterval;
+	}
 }
 
 void NativeRenderer_BeginScene(void)
@@ -294,6 +304,17 @@ internal void NativeRenderer_SetPresentationAspect(int width, int height)
 
 	s_presentAspectW = width / divisor;
 	s_presentAspectH = height / divisor;
+}
+
+void NativeRenderer_SetDisplayAspect(int wide)
+{
+	NativeRenderer_SetPresentationAspect(wide ? 16 : 4, wide ? 9 : 3);
+	if (g_window != NULL && (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) == 0)
+	{
+		SDL_SetWindowSize(g_window, wide ? 1280 : 800, wide ? 720 : 600);
+		SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
+	}
+	NativeRenderer_UpdatePresentationViewport();
 }
 
 internal void NativeRenderer_UpdatePresentationViewport(void)
@@ -552,7 +573,7 @@ GLint u_psxTextureOutputStpLoc;
 	    "	}\n"                                                                                                                                        \
 	    "	void main() {\n"                                                                                                                            \
 	    "		vec4 color = (bilinearFilter > 0) ? bilinearTextureSample(v_texcoord.xy) : nearestTextureSample(v_texcoord.xy);\n"                         \
-	    "		fragColor = dither(color * v_color);\n"                                                                                                    \
+	    "		fragColor = color * v_color;\n"                                                                                                    \
 	    "		fragColor.a = (psxDrawMaskSet != 0 || (psxTextureOutputStp != 0 && sampledStp >= 0.5)) ? 1.0 : 0.0;\n"                                     \
 	    "	}\n"
 
@@ -571,17 +592,17 @@ const char *gte_shader_32_rgba = "	uniform sampler2D s_texture;\n"
                                  "	void main() {\n"
                                  "		vec2 tc = v_texcoord.xy * texelSize + texelSize * 0.5;\n"
                                  "		vec4 color = texture2D(s_texture, tc);\n"
-                                 "		fragColor = dither(color * v_color);\n"
+                                 "		fragColor = color * v_color;\n"
                                  "		fragColor.a = float(psxDrawMaskSet);\n"
                                  "	}\n";
 
-#define GTE_PERSPECTIVE_CORRECTION "	gl_Position = Projection * vec4(a_position.xy, 0.0, 1.0);\n"
+#define GTE_PERSPECTIVE_CORRECTION "	gl_Position = Projection * vec4(a_position.xy + (a_extra.zw * (1.0 / 128.0)), 0.0, 1.0);\n"
 
 #define GTE_VERTEX_SHADER                                                                                          \
 	"	attribute vec4 a_position;\n"                                                                                \
 	"	attribute vec4 a_texcoord; // uv, color multiplier, dither\n"                                                \
 	"	attribute vec4 a_color;\n"                                                                                   \
-	"	attribute vec4 a_extra; // texcoord.xy ofs, unused.xy\n"                                                     \
+	"	attribute vec4 a_extra; // texcoord.xy ofs, subpixelValid, unused\n"                                                     \
 	"	uniform mat4 Projection;\n"                                                                                  \
 	"	const vec2 c_UVFudge = vec2(0.00025, 0.00025);\n"                                                            \
 	"	void main() {\n"                                                                                             \

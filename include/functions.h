@@ -426,6 +426,10 @@ void MainFreeze_ConfigDrawNPC105(s16 startX, s16 startY, s16 radius, int angleSt
 void MainFreeze_ConfigSetupEntry(void);
 void MainFreeze_SafeAdvDestroy(void);
 void MainFreeze_MenuPtrOptions(struct RectMenu *menu);
+#ifdef CTR_NATIVE
+void MainFreeze_OpenTitleOptions(struct RectMenu *menu);
+int MainFreeze_TitleOptionsIsOpen(void);
+#endif
 void MainFreeze_MenuPtrQuit(struct RectMenu *menu);
 void MainFreeze_MenuPtrDefault(struct RectMenu *menu);
 void MainFreeze_IfPressStart(void);

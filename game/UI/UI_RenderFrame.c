@@ -41,6 +41,10 @@ void UI_RenderFrame_Racing()
 
 	struct GameTracker *gGT;
 	gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	int numPlyr = gGT->numPlyrCurrGame;
 	int gameMode1 = gGT->gameMode1;
@@ -304,8 +308,12 @@ void UI_RenderFrame_Racing()
 					// make visible
 					curr->flags &= ~HIDE_MODEL;
 
-					// reduce frame counter
-					playerStruct->PickupLetterHUD.cooldown--;
+					// reduce retail-frame counter
+					if (legacyTicks > 0)
+					{
+						int value = playerStruct->PickupLetterHUD.cooldown - legacyTicks;
+						playerStruct->PickupLetterHUD.cooldown = (value > 0) ? value : 0;
+					}
 
 					// PickupLetterHUD.startX and PickupLetterHUD.startY are start position of animation
 
@@ -347,8 +355,12 @@ void UI_RenderFrame_Racing()
 					UI_Lerp2D_HUD(wumpaModelPos.v, playerStruct->PickupTimeboxHUD.startX, playerStruct->PickupTimeboxHUD.startY, 0x14, 8,
 					              playerStruct->PickupTimeboxHUD.cooldown, 10);
 
-					// Decrease remaining number of frames for this to be on screen
-					playerStruct->PickupTimeboxHUD.cooldown--;
+					// Decrease remaining retail frames for this to be on screen
+					if (legacyTicks > 0)
+					{
+						int value = playerStruct->PickupTimeboxHUD.cooldown - legacyTicks;
+						playerStruct->PickupTimeboxHUD.cooldown = (value > 0) ? value : 0;
+					}
 
 					// Put string on the screen
 					// This happens for 10 frames
@@ -407,8 +419,12 @@ void UI_RenderFrame_Racing()
 					              (int)(hudStructPtr[UI_HUD_SLOT_BATTLE_SCORE].x + 0x20), (int)(hudStructPtr[UI_HUD_SLOT_BATTLE_SCORE].y + 8),
 					              playerStruct->BattleHUD.cooldown, 5);
 
-					// subtract one from the number of frames that the animation lasts
-					playerStruct->BattleHUD.cooldown--;
+					// subtract retail frames from the animation lifetime
+					if (legacyTicks > 0)
+					{
+						int value = playerStruct->BattleHUD.cooldown - legacyTicks;
+						playerStruct->BattleHUD.cooldown = (value > 0) ? value : 0;
+					}
 
 					// print the string that shows the change in your score
 					DecalFont_DrawLine((char *)&string[0], (int)wumpaModelPos.x, (int)wumpaModelPos.y, FONT_SMALL, RED);
@@ -555,7 +571,7 @@ void UI_RenderFrame_Racing()
 		sdata->WrongWayDirection_bool = cVar22;
 	}
 
-	sdata->framesDrivingSameDirection++;
+	sdata->framesDrivingSameDirection += legacyTicks;
 
 	if (numPlyr == 1)
 	{
@@ -901,6 +917,10 @@ void UI_RenderFrame_AdvHub(void)
 void UI_RenderFrame_CrystChall(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 	struct Driver *player;
 	struct UiElement2D *hudStructPtr;
 	struct Instance *hudCrystal;
@@ -978,6 +998,14 @@ void UI_RenderFrame_CrystChall(void)
 	// which also means item has moved to the hud icon
 	if ((player->PickupWumpaHUD.cooldown) == 0)
 	{
+#if defined(CTR_NATIVE)
+		// Collection is a retail-frame event. Do not consume multiple queued
+		// crystals/sounds across high-refresh host updates at the same content time.
+		if (legacyTicks <= 0)
+		{
+			goto LAB_800545e8;
+		}
+#endif
 		// add one to your crystal count
 		player->numCrystals++;
 
@@ -1010,8 +1038,12 @@ void UI_RenderFrame_CrystChall(void)
 		UI_Lerp2D_HUD(crystalPos.v, (int)player->PickupWumpaHUD.startX, (int)player->PickupWumpaHUD.startY, (int)hudStructPtr[UI_HUD_SLOT_CRYSTAL].x,
 		              (int)hudStructPtr[UI_HUD_SLOT_CRYSTAL].y, player->PickupWumpaHUD.cooldown, 5);
 
-		// reduce cooldown between getting each wumpa (or crystal)
-		player->PickupWumpaHUD.cooldown--;
+		// reduce cooldown on the retail content clock
+		if (legacyTicks > 0)
+		{
+			int value = player->PickupWumpaHUD.cooldown - legacyTicks;
+			player->PickupWumpaHUD.cooldown = (value > 0) ? value : 0;
+		}
 	}
 
 	// ======= This is UI_ConvertX_2 and Y_2, but inlined =======

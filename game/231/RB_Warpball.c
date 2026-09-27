@@ -440,13 +440,18 @@ void RB_Warpball_ThTick(struct Thread *t)
 	CTR_WriteU16LE((u8 *)&tw->savedPosXY + 2, (u16)inst->matrix.t[1]);
 	tw->savedPosZ = (s16)inst->matrix.t[2];
 
-	if ((int)inst->animFrame + 1 < INSTANCE_GetNumAnimFrames(inst, 0))
+#if defined(CTR_NATIVE)
+	if (Platform_GetLegacy30HzTicks() > 0)
+#endif
 	{
-		inst->animFrame++;
-	}
-	else
-	{
-		inst->animFrame = 0;
+		if ((int)inst->animFrame + 1 < INSTANCE_GetNumAnimFrames(inst, 0))
+		{
+			inst->animFrame++;
+		}
+		else
+		{
+			inst->animFrame = 0;
+		}
 	}
 
 	if (tw->driverTarget != NULL)

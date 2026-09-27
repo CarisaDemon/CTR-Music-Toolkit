@@ -1002,6 +1002,9 @@ static void DrawLevelOvr1P_CopySourceVertex(struct DrawLevelOvr1PScratchVertex *
 static void DrawLevelOvr1P_CopyProjectedScreenDepth(struct DrawLevelOvr1PScratchVertex *dst, const struct DrawLevelOvr1PScratchVertex *src)
 {
 	dst->posScreenVec = src->posScreenVec;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(dst->posScreen,src->posScreen,(u16)src->posScreen[0]|((u32)(u16)src->posScreen[1]<<16));
+#endif
 	dst->depth = src->depth;
 	dst->clipNear = src->clipNear;
 	dst->clipHalfNear = src->clipHalfNear;
@@ -1867,6 +1870,9 @@ static void DrawLevelOvr1P_BuildMidpointFromFirstEndpoint(struct DrawLevelOvr1PS
                                                           int writeClipBytes)
 {
 	*dstA = *srcA;
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(dstA->posScreen,srcA->posScreen,DrawLevelOvr1P_PackProjectedSxy(srcA));
+#endif
 	dstA->color_hi[3] = 0;
 	DrawLevelOvr1P_BuildMidpointValue(dstMid, srcA, srcB, writeClipBytes);
 }
@@ -2084,12 +2090,21 @@ static void DrawLevelOvr1P_WriteProjectedGT3(POLY_GT3 *poly, const struct DrawLe
 {
 	CtrGpu_WriteColorCode(&poly->r0, DrawLevelOvr1P_GetProjectedColorCode(&projected[indices[0]], code));
 	CtrGpu_WritePackedXY(&poly->x0, DrawLevelOvr1P_PackProjectedSxy(&projected[indices[0]]));
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&poly->x0, projected[indices[0]].posScreen, DrawLevelOvr1P_PackProjectedSxy(&projected[indices[0]]));
+#endif
 	CtrGpu_WritePackedUVWord(&poly->u0, uv0);
 	CtrGpu_WriteColorCode(&poly->r1, DrawLevelOvr1P_GetProjectedColorCode(&projected[indices[1]], 0));
 	CtrGpu_WritePackedXY(&poly->x1, DrawLevelOvr1P_PackProjectedSxy(&projected[indices[1]]));
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&poly->x1, projected[indices[1]].posScreen, DrawLevelOvr1P_PackProjectedSxy(&projected[indices[1]]));
+#endif
 	CtrGpu_WritePackedUVWord(&poly->u1, uv1);
 	CtrGpu_WriteColorCode(&poly->r2, DrawLevelOvr1P_GetProjectedColorCode(&projected[indices[2]], 0));
 	CtrGpu_WritePackedXY(&poly->x2, DrawLevelOvr1P_PackProjectedSxy(&projected[indices[2]]));
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&poly->x2, projected[indices[2]].posScreen, DrawLevelOvr1P_PackProjectedSxy(&projected[indices[2]]));
+#endif
 	CtrGpu_WritePackedUVWord(&poly->u2, uv2);
 }
 
@@ -2099,6 +2114,9 @@ static void DrawLevelOvr1P_WriteProjectedGT4(POLY_GT4 *poly, const struct DrawLe
 	DrawLevelOvr1P_WriteProjectedGT3((POLY_GT3 *)poly, projected, indices, code, uv0, uv1, uv2);
 	CtrGpu_WriteColorCode(&poly->r3, DrawLevelOvr1P_GetProjectedColorCode(&projected[indices[3]], 0));
 	CtrGpu_WritePackedXY(&poly->x3, DrawLevelOvr1P_PackProjectedSxy(&projected[indices[3]]));
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&poly->x3, projected[indices[3]].posScreen, DrawLevelOvr1P_PackProjectedSxy(&projected[indices[3]]));
+#endif
 	CtrGpu_WritePackedUVWord(&poly->u3, uv2 >> 16);
 }
 
@@ -2579,12 +2597,21 @@ static void DrawLevelOvr1P_WriteClipRecordGT3(POLY_GT3 *poly, const struct DrawL
 {
 	CtrGpu_WriteColorCode(&poly->r0, DrawLevelOvr1P_GetClipRecordColorCode(&emit[0], code));
 	CtrGpu_WritePackedXY(&poly->x0, DrawLevelOvr1P_PackProjectedSxy(&emit[0]));
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&poly->x0, emit[0].posScreen, DrawLevelOvr1P_PackProjectedSxy(&emit[0]));
+#endif
 	CtrGpu_WritePackedUVWord(&poly->u0, uv0);
 	CtrGpu_WriteColorCode(&poly->r1, DrawLevelOvr1P_GetClipRecordColorCode(&emit[1], 0));
 	CtrGpu_WritePackedXY(&poly->x1, DrawLevelOvr1P_PackProjectedSxy(&emit[1]));
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&poly->x1, emit[1].posScreen, DrawLevelOvr1P_PackProjectedSxy(&emit[1]));
+#endif
 	CtrGpu_WritePackedUVWord(&poly->u1, uv1);
 	CtrGpu_WriteColorCode(&poly->r2, DrawLevelOvr1P_GetClipRecordColorCode(&emit[2], 0));
 	CtrGpu_WritePackedXY(&poly->x2, DrawLevelOvr1P_PackProjectedSxy(&emit[2]));
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&poly->x2, emit[2].posScreen, DrawLevelOvr1P_PackProjectedSxy(&emit[2]));
+#endif
 	CtrGpu_WritePackedUVWord(&poly->u2, uv2);
 }
 
@@ -2593,6 +2620,9 @@ static void DrawLevelOvr1P_WriteClipRecordGT4(POLY_GT4 *poly, const struct DrawL
 	DrawLevelOvr1P_WriteClipRecordGT3((POLY_GT3 *)poly, emit, code, uv0, uv1, uv2);
 	CtrGpu_WriteColorCode(&poly->r3, DrawLevelOvr1P_GetClipRecordColorCode(&emit[3], 0));
 	CtrGpu_WritePackedXY(&poly->x3, DrawLevelOvr1P_PackProjectedSxy(&emit[3]));
+#if defined(CTR_NATIVE)
+	NativeGTE_CopySXYStore(&poly->x3, emit[3].posScreen, DrawLevelOvr1P_PackProjectedSxy(&emit[3]));
+#endif
 	CtrGpu_WritePackedUVWord(&poly->u3, DrawLevelOvr1P_GetClipRecordSignedUvWord(&emit[3]));
 }
 

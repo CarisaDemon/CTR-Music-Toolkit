@@ -137,9 +137,13 @@ void RB_Fireball_ThTick(struct Thread *t)
 
 	struct GameTracker *gGT;
 	int elapsedTimeMS;
+	int legacyTicks = 1;
 
 	gGT = sdata->gGT;
 	elapsedTimeMS = gGT->elapsedTimeMS;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	fireInst = t->inst;
 	fireObj = t->object;
@@ -182,8 +186,10 @@ void RB_Fireball_ThTick(struct Thread *t)
 		// set new velY
 		fireObj->velY = velY;
 
-		// fire particles
-		particle = Particle_Init(0, gGT->iconGroup[0xA], &emSet_Fireball[0]);
+		// Fire particle emission is authored per retail frame.
+		particle = NULL;
+		if (legacyTicks > 0)
+			particle = Particle_Init(0, gGT->iconGroup[0xA], &emSet_Fireball[0]);
 
 		if (particle != 0)
 		{
@@ -219,18 +225,13 @@ void RB_Fireball_ThTick(struct Thread *t)
 
 	fireObj->cycleTimer -= elapsedTimeMS;
 
-	// if animation is not over
-	if ((fireInst->animFrame + 1) < INSTANCE_GetNumAnimFrames(fireInst, 0))
+	// Animation is authored at the retail content cadence.
+	if (legacyTicks > 0)
 	{
-		// increment frame
-		fireInst->animFrame = fireInst->animFrame + 1;
-	}
-
-	// if animation ended
-	else
-	{
-		// reset
-		fireInst->animFrame = 0;
+		if ((fireInst->animFrame + 1) < INSTANCE_GetNumAnimFrames(fireInst, 0))
+			fireInst->animFrame = fireInst->animFrame + 1;
+		else
+			fireInst->animFrame = 0;
 	}
 
 	if ((oldVelY >= 0) && (fireObj->velY < 0))

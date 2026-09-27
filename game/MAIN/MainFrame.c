@@ -1,6 +1,31 @@
 #include <common.h>
 
 #if defined(CTR_NATIVE)
+static int MainFrame_ScaleElapsedTimerUnits(int rawElapsed)
+{
+	// Retail converts timer units with *32/100. At 200 Hz rawElapsed is
+	// usually ~15, so integer division used to throw away ~0.8 ms every host
+	// frame (15*32/100 == 4). Preserve that fractional time across frames so
+	// high-refresh physics accumulates the same elapsed time as the 30 Hz path.
+	static int remainder = 0;
+	long long scaled;
+	int elapsed;
+
+	if (!Platform_GetHighRefreshMode())
+	{
+		return (rawElapsed << 5) / 100;
+	}
+	if (rawElapsed < 0)
+	{
+		return rawElapsed;
+	}
+
+	scaled = (long long)rawElapsed * 32 + remainder;
+	elapsed = (int)(scaled / 100);
+	remainder = (int)(scaled - (long long)elapsed * 100);
+	return elapsed;
+}
+
 static void MainFrame_RegisterGpuLinkRanges(struct GameTracker *gGT)
 {
 	static const char *const primLabels[2] = {"db0 prim", "db1 prim"};
@@ -63,7 +88,11 @@ void MainFrame_ResetDB(struct GameTracker *gGT)
 	gGT->swapchainIndex = 1 - gGT->swapchainIndex;
 
 	gGT->backBuffer = &gGT->db[gGT->swapchainIndex];
+#if defined(CTR_NATIVE)
+	gGT->frameTimer_MainFrame_ResetDB += Platform_GetLegacy30HzTicks();
+#else
 	gGT->frameTimer_MainFrame_ResetDB++;
+#endif
 
 	otSwapchainDB = (int)gGT->otSwapchainDB[gGT->swapchainIndex];
 
@@ -131,20 +160,52 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 	struct Driver *psVar10;
 	struct PushBuffer *pushBuffer;
 	int iVar11;
+	int legacyTicks = 1;
 	struct Thread *psVar12;
 
 	wasPausedAtFrameStart = true;
 	if ((gGT->gameMode1 & PAUSE_ALL) == 0)
 	{
 		wasPausedAtFrameStart = false;
+
+		// Measure host elapsed time at a stable point once per real update. In
+		// high-refresh mode this is typically ~5 ms at 200 FPS.
+		iVar4 = Timer_GetTime_Elapsed(gGT->clockFrameStart, &gGT->clockFrameStart);
+#if defined(CTR_NATIVE)
+		iVar4 = MainFrame_ScaleElapsedTimerUnits(iVar4);
+#else
+		iVar4 = (iVar4 << 5) / 100;
+#endif
+		gGT->elapsedTimeMS = iVar4;
+		if (iVar4 < 0)
+		{
+			gGT->elapsedTimeMS = 0x20;
+		}
+		if (0x40 < gGT->elapsedTimeMS)
+		{
+			gGT->elapsedTimeMS = 0x40;
+		}
+		if ((gGT->gameMode1_prevFrame & PAUSE_ALL) != 0)
+		{
+			gGT->elapsedTimeMS = 0x20;
+		}
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+		NativeReplayScheduler_ConsumeFrameElapsedTimeMS(&gGT->elapsedTimeMS);
+#endif
+#if defined(CTR_NATIVE)
+		Platform_UpdateLegacy30HzClock(gGT->elapsedTimeMS);
+		legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
+
 		pushBuffer = gGT->pushBuffer;
 		for (psVar12 = gGT->threadBuckets[0].thread; psVar12 != 0; psVar12 = psVar12->siblingThread)
 		{
 			psVar9 = (struct Driver *)psVar12->object;
 
-			if (psVar9->clockSend)
+			if (psVar9->clockSend && legacyTicks > 0)
 			{
-				psVar9->clockSend--;
+				int clockSend = (int)psVar9->clockSend - legacyTicks;
+				psVar9->clockSend = (clockSend > 0) ? clockSend : 0;
 			}
 			uVar3 = psVar9->clockFlash;
 			if (uVar3 == 0)
@@ -179,37 +240,19 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 #if defined(CTR_NATIVE)
 				DISPLAY_Blur_Main(pushBuffer, -uVar3);
 #endif
-				psVar9->clockFlash--;
+				if (legacyTicks > 0)
+				{
+					int clockFlash = (int)psVar9->clockFlash - legacyTicks;
+					psVar9->clockFlash = (clockFlash > 0) ? clockFlash : 0;
+				}
 			}
 		LAB_80034e74:
 			pushBuffer = pushBuffer + 1;
 		}
-		gGT->timer = gGT->timer + 1;
-		gGT->framesInThisLEV = gGT->framesInThisLEV + 1;
+		gGT->timer = gGT->timer + legacyTicks;
+		gGT->framesInThisLEV = gGT->framesInThisLEV + legacyTicks;
 		gGT->unk1cc4[4] = 0;
 
-		iVar4 = Timer_GetTime_Elapsed(gGT->clockFrameStart, &gGT->clockFrameStart);
-		iVar4 = (iVar4 << 5) / 100;
-
-		gGT->elapsedTimeMS = iVar4;
-		if (iVar4 < 0)
-		{
-			gGT->elapsedTimeMS = 0x20;
-		}
-		if (0x40 < gGT->elapsedTimeMS)
-		{
-			gGT->elapsedTimeMS = 0x40;
-		}
-		if ((gGT->gameMode1_prevFrame & PAUSE_ALL) != 0)
-		{
-			gGT->elapsedTimeMS = 0x20;
-		}
-#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
-		// NOTE(aalhendi): Replay playback must not let host RCNT timing decide
-		// cutscene/gameplay advancement. Use the recorded PS1-shaped frame delta
-		// before msInThisLEV and elapsedEventTime consume it.
-		NativeReplayScheduler_ConsumeFrameElapsedTimeMS(&gGT->elapsedTimeMS);
-#endif
 		gGT->msInThisLEV += gGT->elapsedTimeMS;
 		if (gGT->trafficLightsTimer < 1)
 		{
@@ -357,6 +400,27 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 	}
 	else
 	{
+#if defined(CTR_NATIVE)
+		// The retail pause UI still has a 30 Hz animation clock even though
+		// gameplay time is frozen. Keep the host frame timestamp moving while
+		// paused and feed only this local delta into the legacy tick accumulator.
+		iVar4 = Timer_GetTime_Elapsed(gGT->clockFrameStart, &gGT->clockFrameStart);
+#if defined(CTR_NATIVE)
+		iVar4 = MainFrame_ScaleElapsedTimerUnits(iVar4);
+#else
+		iVar4 = (iVar4 << 5) / 100;
+#endif
+		if (iVar4 < 0)
+		{
+			iVar4 = 0;
+		}
+		if (iVar4 > 0x40)
+		{
+			iVar4 = 0x40;
+		}
+		Platform_UpdateLegacy30HzClock(iVar4);
+		legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 		psVar12 = gGT->threadBuckets[AKUAKU].thread;
 		if (psVar12 != 0)
 		{
@@ -416,7 +480,15 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 			}
 			else
 			{
+#if defined(CTR_NATIVE)
+				if (legacyTicks > 0)
+				{
+					int value = gGT->cooldownfromPauseUntilUnpause - legacyTicks;
+					gGT->cooldownfromPauseUntilUnpause = (value > 0) ? value : 0;
+				}
+#else
 				gGT->cooldownfromPauseUntilUnpause--;
+#endif
 			}
 		}
 		else if (gGT->cooldownFromUnpauseUntilPause == 0)
@@ -454,7 +526,15 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 		}
 		else
 		{
+#if defined(CTR_NATIVE)
+			if (legacyTicks > 0)
+			{
+				int value = gGT->cooldownFromUnpauseUntilPause - legacyTicks;
+				gGT->cooldownFromUnpauseUntilPause = (value > 0) ? value : 0;
+			}
+#else
 			gGT->cooldownFromUnpauseUntilPause--;
+#endif
 		}
 	}
 	else if (gGT->timerEndOfRaceVS == 0)
@@ -506,7 +586,11 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 				gGT->gameModeEnd &= ~(NEW_BEST_LAP | NEW_HIGH_SCORE);
 				return;
 			}
-			gGT->unk_timerCooldown_similarTo_1d36--;
+			if (legacyTicks > 0)
+			{
+				int value = gGT->unk_timerCooldown_similarTo_1d36 - legacyTicks;
+				gGT->unk_timerCooldown_similarTo_1d36 = (value > 0) ? value : 0;
+			}
 		}
 	}
 	else if ((uVar3 & ARCADE_MODE) == 0)
@@ -520,7 +604,11 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 		}
 		if (0x1e < gGT->timerEndOfRaceVS)
 		{
-			gGT->timerEndOfRaceVS--;
+			if (legacyTicks > 0)
+			{
+				int value = gGT->timerEndOfRaceVS - legacyTicks;
+				gGT->timerEndOfRaceVS = (value > 0) ? value : 0;
+			}
 		}
 	}
 	else

@@ -19,6 +19,13 @@ void LOAD_GlobalModelPtrs_MPK()
 			continue;
 		}
 
+#if defined(CTR_NATIVE)
+		if ((m->id < 0) || (m->id >= (s32)len(gGT->modelPtr)))
+		{
+			continue;
+		}
+#endif
+
 		gGT->modelPtr[m->id] = m;
 	}
 

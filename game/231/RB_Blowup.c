@@ -42,6 +42,12 @@ void RB_Blowup_ProcessBucket(struct Thread *thread)
 
 static void RB_Blowup_UpdateSlot(int *slot)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && (Platform_GetLegacy30HzTicks() == 0))
+	{
+		return;
+	}
+#endif
 	struct Instance *inst;
 	int nextFrame;
 

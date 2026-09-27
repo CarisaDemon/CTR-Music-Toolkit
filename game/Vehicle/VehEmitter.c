@@ -216,11 +216,26 @@ struct Particle *VehEmitter_Exhaust(struct Driver *d, VECTOR *exhaustPos, VECTOR
 	}
 
 	p->axis[0].startVal += exhaustPos->vx - exhaustVel->vx;
-	p->axis[0].velocity = (s16)exhaustVel->vx;
 	p->axis[1].startVal += exhaustPos->vy - exhaustVel->vy;
-	p->axis[1].velocity = (s16)exhaustVel->vy;
 	p->axis[2].startVal += exhaustPos->vz - exhaustVel->vz;
-	p->axis[2].velocity = (s16)exhaustVel->vz;
+
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode())
+	{
+		// Keep the restored retail particle clock, but let exhaust travel just a
+		// little faster so the smoke does not look sluggish at high refresh.
+		// 3/16 = 18.75% faster (v70 used 1/8 = 12.5%).
+		p->axis[0].velocity = (s16)(exhaustVel->vx + ((exhaustVel->vx * 3) >> 4));
+		p->axis[1].velocity = (s16)(exhaustVel->vy + ((exhaustVel->vy * 3) >> 4));
+		p->axis[2].velocity = (s16)(exhaustVel->vz + ((exhaustVel->vz * 3) >> 4));
+	}
+	else
+#endif
+	{
+		p->axis[0].velocity = (s16)exhaustVel->vx;
+		p->axis[1].velocity = (s16)exhaustVel->vy;
+		p->axis[2].velocity = (s16)exhaustVel->vz;
+	}
 
 	p->driverInst = dInst;
 	p->otIndexOffset = dInst->depthBiasNormal;
@@ -893,7 +908,15 @@ static int VehEmitter_ShouldSkipExhaust(struct Thread *thread, struct Driver *d)
 
 	if (d->failedBoostExhaustTimer != 0)
 	{
-		d->failedBoostExhaustTimer--;
+		int ticks = 1;
+#if defined(CTR_NATIVE)
+		ticks = Platform_GetLegacy30HzTicks();
+#endif
+		if (ticks > 0)
+		{
+			int value = d->failedBoostExhaustTimer - ticks;
+			d->failedBoostExhaustTimer = (value > 0) ? value : 0;
+		}
 	}
 
 	return 0;
@@ -961,9 +984,18 @@ void VehEmitter_DriverMain(struct Thread *thread, struct Driver *d)
 
 	VehEmitter_SkidmarkAudio(thread, d, terrain, terrainFlags, absSpeedApprox);
 
-	if (!VehEmitter_ShouldSkipExhaust(thread, d))
 	{
-		VehEmitter_ExhaustPair(thread, d);
+		int exhaustTicks = 1;
+#if defined(CTR_NATIVE)
+		exhaustTicks = Platform_GetLegacy30HzTicks();
+#endif
+		// Do not spawn a fresh exhaust pair on every host refresh. gGT->timer and
+		// the original LOD cadence are already on the retail clock, so repeated
+		// calls during the same legacy tick only multiply smoke/flame density.
+		if ((exhaustTicks > 0) && !VehEmitter_ShouldSkipExhaust(thread, d))
+		{
+			VehEmitter_ExhaustPair(thread, d);
+		}
 	}
 
 	if (d->burnTimer != 0)

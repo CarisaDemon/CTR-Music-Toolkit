@@ -171,7 +171,11 @@ void RR_EndEvent_DrawMenu(void)
 
 	if (sdata->framesSinceRaceEnded < RR_RESULT_MAX_FRAMES)
 	{
+#if defined(CTR_NATIVE)
+		sdata->framesSinceRaceEnded += Platform_GetLegacy30HzTicks();
+#else
 		sdata->framesSinceRaceEnded++;
+#endif
 	}
 
 	if (sdata->framesSinceRaceEnded >= RR_HIGH_SCORE_REVEAL_FRAME)

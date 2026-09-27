@@ -124,6 +124,12 @@ static void VehFrameProc_Driving_SpawnBurnSmoke(struct Driver *d)
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8005b178-0x8005b510
 void VehFrameProc_Driving(struct Thread *t, struct Driver *d)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && Platform_GetLegacy30HzTicks() == 0)
+	{
+		return;
+	}
+#endif
 	struct Instance *inst = t->inst;
 	u8 desiredAnim = VEH_FRAME_ANIM_DRIVE;
 
@@ -279,6 +285,12 @@ void VehFrameProc_Driving(struct Thread *t, struct Driver *d)
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8005b510-0x8005b5fc.
 void VehFrameProc_Spinning(struct Thread *t, struct Driver *d)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && Platform_GetLegacy30HzTicks() == 0)
+	{
+		return;
+	}
+#endif
 	struct Instance *inst = t->inst;
 	int numFrames = VehFrameInst_GetNumAnimFrames(inst, inst->animIndex);
 	int targetFrame;
@@ -328,6 +340,12 @@ void VehFrameProc_Spinning(struct Thread *t, struct Driver *d)
 // NOTE(aalhendi): ASM-verified NTSC-U 926 0x8005b5fc-0x8005b6b8.
 void VehFrameProc_LastSpin(struct Thread *t, struct Driver *d)
 {
+#if defined(CTR_NATIVE)
+	if (Platform_GetHighRefreshMode() && Platform_GetLegacy30HzTicks() == 0)
+	{
+		return;
+	}
+#endif
 	struct Instance *inst = t->inst;
 
 	if (inst->animIndex != VEH_FRAME_ANIM_DRIVE)

@@ -66,7 +66,15 @@ void MM_Title_MenuUpdate(void)
 	LAB_800ac004:
 
 		// decrease amount of time remaining in animation
+#if defined(CTR_NATIVE)
+		{
+			int ticks = Platform_GetLegacy30HzTicks();
+			if (ticks > D230.titleMenuTransitionFrame) ticks = D230.titleMenuTransitionFrame;
+			D230.titleMenuTransitionFrame -= ticks;
+		}
+#else
 		D230.titleMenuTransitionFrame -= 1;
+#endif
 		goto END_FUNCTION;
 	}
 
@@ -108,7 +116,11 @@ void MM_Title_MenuUpdate(void)
 
 	// Increment frame timer, increase time left in "fade-in"
 	// animation, which plays it in reverse, as "fade-out"
+#if defined(CTR_NATIVE)
+	D230.titleMenuTransitionFrame += Platform_GetLegacy30HzTicks();
+#else
 	D230.titleMenuTransitionFrame += 1;
+#endif
 
 	// If the "fade-out" animation is not over, skip "switch" statemenet
 	if (D230.titleMenuTransitionFrame <= D230.titleMenuTransitionDurationFrames)
@@ -386,6 +398,10 @@ void MM_Title_ThTick(struct Thread *title)
 {
 	// frame counters
 	s32 timer = D230.titleIntroFrame;
+	int legacyTicks = 1;
+#if defined(CTR_NATIVE)
+	legacyTicks = Platform_GetLegacy30HzTicks();
+#endif
 
 	// If you press Cross, Circle, Triangle, or Square
 	if ((sdata->buttonTapPerPlayer[0] & TITLE_INTRO_SKIP_INPUT) != 0)
@@ -403,13 +419,17 @@ void MM_Title_ThTick(struct Thread *title)
 		timer = TITLE_INTRO_MENU_READY_FRAME;
 	}
 
-	// play queued title sounds
-	for (s32 soundIndex = 0; soundIndex < TITLE_SOUND_COUNT; soundIndex++)
+	// Play one-shot title sounds only when the retail 30 Hz content clock
+	// advances. Otherwise a high-refresh host frame would replay the same
+	// scheduled sound several times while timer is intentionally unchanged.
+	if (legacyTicks > 0)
 	{
-		if (D230.titleSounds[soundIndex].frameToPlay == timer)
+		for (s32 soundIndex = 0; soundIndex < TITLE_SOUND_COUNT; soundIndex++)
 		{
-			// NOTE(aalhendi): ASM-verified NTSC-U 926 0x800ac3e8-0x800ac400 for title queued SFX.
-			OtherFX_Play(D230.titleSounds[soundIndex].soundID, 1);
+			if (D230.titleSounds[soundIndex].frameToPlay == timer)
+			{
+				OtherFX_Play(D230.titleSounds[soundIndex].soundID, 1);
+			}
 		}
 	}
 
@@ -467,12 +487,15 @@ void MM_Title_ThTick(struct Thread *title)
 
 			MM_Title_UpdateTrophySpecLight(titleInst);
 		}
+
+
 	}
 
 	MM_Title_CameraMove(ptrTitle, timer);
 
-	// increment frame counter
-	timer = D230.titleIntroFrame + 1;
+	// Advance the original title timeline at its retail rate, independent of
+	// the host refresh rate.
+	timer = D230.titleIntroFrame + legacyTicks;
 
 	if (TITLE_INTRO_END_FRAME < D230.titleIntroFrame)
 	{
